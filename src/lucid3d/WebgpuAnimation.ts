@@ -1,5 +1,5 @@
 
-import { TEST_ANIMATION_TIME } from "../AppSetup";
+import { TEST_ANIMATION_TIME } from "../components/WebgpuApp/AppSetup";
 import { WebgpuAnimationChannel } from "./WebgpuAnimationChannel";
 export class WebgpuAnimation
 {

@@ -33,10 +33,21 @@ python3 -m http.server 8000
 ```
 
 ## Project layout
-- `src/index.ts`: entry point (initializes the WebGPU scene)
-- `src/components/WebgpuApp/…`: rendering core (camera/controls), GLTF loader/animation, samples
+- `src/lucid3d/`: Lucid3D core library (renderer, materials/shaders, GLTF loader, animation/skinning, math)
+- `src/components/WebgpuApp/`: app bootstrap and utilities (debug overlay, query flags, WebXR button)
+- `src/lucid3d/WebgpuSamples/`: small samples (textured cube, glTF Fox) used by the demo app
+- `src/index.ts`: entry point that initializes the WebGPU scene
 - `assets/`: models, textures and resources
 - `webpack.config.js`: Webpack 5 config (dev: BrowserSync, prod: minification)
+
+TypeScript path aliases
+- `@lucid3d` points to `src/lucid3d/index.ts` (barrel exports)
+- `@lucid3d/*` resolves to files under `src/lucid3d/*`
+
+Example import
+```ts
+import { WebgpuMain } from '@lucid3d';
+```
 
 ## Troubleshooting
 - `navigator.gpu` is undefined: use a WebGPU‑capable browser (Chrome 113+) or enable the flag; ensure a secure context (`https://` or `http://localhost`).
@@ -57,3 +68,7 @@ Usage
 ```
 
 The script will add remotes if missing, commit (when there are local changes and a message is provided), and push to both remotes with tags.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See the `LICENSE` file for details.

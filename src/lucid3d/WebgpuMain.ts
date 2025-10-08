@@ -4,7 +4,7 @@ import { WebgpuFlyControls, WebgpuPerspectiveCamera } from './WebgpuOrbitControl
 
 import { CubeRenderTest } from './WebgpuSamples/CubeGeometry';
 import { GltfRenderTest } from './WebgpuSamples/gltfRenderTest';
-import { debugOverlay } from '../util/debug-overlay';
+import { debugOverlay } from '../components/WebgpuApp/util/debug-overlay';
 
 
 

@@ -4,7 +4,7 @@ import {AbstractDynamicAttributeBase, AbstractDynamicGeom, AttributeComponentCou
 import {WebgpuTransform} from "../WebgpuTransform";
 import {WebgpuMain} from "../WebgpuMain";
 import {WebgpuSkin} from "../WebgpuSkin";
-import { QueryArgs } from "../../util/query-args";
+import { QueryArgs } from "../../components/WebgpuApp/util/query-args";
 import {UniqueIDHelper} from "../Typescript/UniqueIDHelper";
 
 let basicVertWGSL = require('./shaders/research/vertex.wgsl').default;

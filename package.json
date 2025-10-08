@@ -1,10 +1,10 @@
 {
-  "name": "@designhubz/adaptive-downgrade",
+  "name": "@luciformresearch/Lucid3D",
   "version": "0.0.0",
   "main": "src/index.ts",
-  "description": "Adaptive downgrade",
-  "author": "DESIGNHUBZ",
-  "license": "UNLICENSED",
+  "description": "Lucid3D Webgpu Rendering Library",
+  "author": "Lucie Defraiteur",
+  "license": "Apache-2.0",
   "scripts": {
     "start": "webpack --config webpack.config.js -w",
     "build": "webpack --config webpack.config.js --env production"

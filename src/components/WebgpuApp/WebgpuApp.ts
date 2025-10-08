@@ -33,7 +33,7 @@ import { XRFrame } from 'webxr';
 // and devices which only support WebVR.
 import { QueryArgs } from './util/query-args';
 
-import { WebgpuMain } from './Lucid3D/WebgpuMain';
+import { WebgpuMain } from '@lucid3d/WebgpuMain';
 declare class XRWebGLLayer {
     constructor(session: XRSession, gl: WebGL2RenderingContext);
 

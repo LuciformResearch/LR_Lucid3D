@@ -14,6 +14,10 @@
     "forceConsistentCasingInFileNames": true,
     "noImplicitOverride": false,
     "baseUrl": ".",
+    "paths": {
+      "@lucid3d/*": ["src/lucid3d/*"],
+      "@lucid3d": ["src/lucid3d/index.ts"]
+    },
     "allowJs": true,
     "noEmit": false,
     "noUnusedLocals" :false,

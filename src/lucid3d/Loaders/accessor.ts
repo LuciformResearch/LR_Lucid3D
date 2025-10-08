@@ -1,4 +1,4 @@
-import {GL} from "../../WebgpuApp";
+import {GL} from "../WebgpuApp";
 
 class gltfAccessor
 {

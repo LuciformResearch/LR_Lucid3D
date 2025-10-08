@@ -23,7 +23,7 @@ import { AbstractAttributeBase, AbstractDynamicAttributeBase, AbstractFloatAttri
 import { Vector4 } from '../Math/Vector4';
 import { Vector2 } from '../Math/Vector2';
 import { Vector3 } from '../Math/Vector3';
-import { GL } from '../../WebgpuApp';
+import { GL } from '../WebgpuApp';
 import { Matrix4 } from '../Math/Matrix4';
 import { WebgpuTransform } from '../WebgpuTransform';
 import { MathHelper } from '../Math/MathHelper';

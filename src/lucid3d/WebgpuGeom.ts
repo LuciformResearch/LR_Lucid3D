@@ -1,4 +1,4 @@
-import {GL} from "../WebgpuApp";
+import {GL} from "./WebgpuApp";
 import {Vector2} from "./Math/Vector2";
 import {Vector3} from "./Math/Vector3";
 import {Vector4} from "./Math/Vector4";
