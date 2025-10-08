@@ -1,0 +1,9 @@
+node_modules
+.vscode
+dist
+build
+package-lock.json
+.npmrc
+*.ignore
+.env.local
+notes

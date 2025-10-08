@@ -1,0 +1,51 @@
+{
+  "_from": "@webxr-input-profiles/assets",
+  "_id": "@webxr-input-profiles/assets@1.0.9",
+  "_inBundle": false,
+  "_integrity": "sha512-EfypauG3VRx6ty0OptGScdZt+X7SfXa0KEu0DSyamOcDqEl4kGQay+0Akh9KseVi3r8c+lKuL4qrztWDOKtwAw==",
+  "_location": "/@webxr-input-profiles/assets",
+  "_phantomChildren": {},
+  "_requested": {
+    "type": "tag",
+    "registry": true,
+    "raw": "@webxr-input-profiles/assets",
+    "name": "@webxr-input-profiles/assets",
+    "escapedName": "@webxr-input-profiles%2fassets",
+    "scope": "@webxr-input-profiles",
+    "rawSpec": "",
+    "saveSpec": null,
+    "fetchSpec": "latest"
+  },
+  "_requiredBy": [
+    "#USER",
+    "/"
+  ],
+  "_resolved": "https://registry.npmjs.org/@webxr-input-profiles/assets/-/assets-1.0.9.tgz",
+  "_shasum": "8d70db73d1cb8c2fc87fec6e2df26f2de2d250e8",
+  "_spec": "@webxr-input-profiles/assets",
+  "_where": "C:\\Users\\gonzague\\git_workspaces\\VR_ModelingTool",
+  "bundleDependencies": false,
+  "deprecated": false,
+  "description": "assets",
+  "devDependencies": {
+    "@webxr-input-profiles/registry": "^1.0.0"
+  },
+  "files": [
+    "package.json",
+    "LICENSE",
+    "README.md",
+    "dist/profiles/",
+    "schemas/",
+    "src/**"
+  ],
+  "main": "dist/profilesList.json",
+  "name": "@webxr-input-profiles/assets",
+  "scripts": {
+    "build": "gulp",
+    "clean": "gulp clean",
+    "cleanBuild": "npm run clean && npm run build",
+    "test": "echo \"Run tests from root\" && exit 1",
+    "watch": "gulp watch"
+  },
+  "version": "1.0.9"
+}

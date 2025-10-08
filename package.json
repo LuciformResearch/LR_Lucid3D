@@ -1,0 +1,35 @@
+{
+  "name": "@designhubz/adaptive-downgrade",
+  "version": "0.0.0",
+  "main": "src/index.ts",
+  "description": "Adaptive downgrade",
+  "author": "DESIGNHUBZ",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "webpack --config webpack.config.js -w",
+    "build": "webpack --config webpack.config.js --env production"
+  },
+  "dependencies": {
+    "@petamoriken/float16": "^3.8.1",
+    "@types/webxr": "^0.2.3",
+    "@webgpu/types": "^0.1.21",
+    "@webxr-input-profiles/assets": "^1.0.9",
+    "@webxr-input-profiles/motion-controllers": "^1.0.0",
+    "browser-sync": "^2.29.3",
+    "gl-matrix": "^3.4.3",
+    "typescript": "^5.0.4",
+    "webxr": "0.0.0",
+    "webxr-polyfill": "^2.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.2.3",
+    "@types/three": "^0.152.0",
+    "browser-sync-webpack-plugin": "^2.3.0",
+    "raw-loader": "^4.0.2",
+    "ts-loader": "^9.4.2",
+    "ts-node": "^10.9.1",
+    "tsconfig-paths-webpack-plugin": "^4.0.1",
+    "webpack": "^5.83.1",
+    "webpack-cli": "^5.1.1"
+  }
+}
