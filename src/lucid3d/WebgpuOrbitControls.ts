@@ -168,18 +168,18 @@ export class WebgpuFlyControls
             useY = true;
         }
         let globalDirection: Vector3 = new Vector3(0, 0, 0);
-        if (input.IsDown(KeyCode.r))
+        if (input.IsDown(KeyCode.r) || input.IsDown(KeyCode.spacebar) || input.IsDown(KeyCode.e))
         {
             globalDirection.y += 1.0;
             useY = false;
         }
-        if (input.IsDown(KeyCode.ctrl))
+        if (input.IsDown(KeyCode.ctrl) || input.IsDown(KeyCode.c))
         {
             globalDirection.y -= 1.0;
             useY = false;
         }
 
-        if (input.IsDown(KeyCode.z))
+        if (input.IsDown(KeyCode.z) || input.IsDown(KeyCode.w))
         {
             if (!useY)
             {
@@ -205,7 +205,7 @@ export class WebgpuFlyControls
         {
             this.direction.x = 1.0;
         }
-        if (input.IsDown(KeyCode.q))
+        if (input.IsDown(KeyCode.q) || input.IsDown(KeyCode.a))
         {
             this.direction.x = -1.0;
         }

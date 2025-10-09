@@ -124,9 +124,30 @@ export class WebgpuMain {
     let camera = new WebgpuPerspectiveCamera();
     camera.position.set(0, 0, 4);
     camera.aspectRatio = this.presentationSize[0] / this.presentationSize[1];
-
-
     this.flyControls = new WebgpuFlyControls(camera);
+    // Camera presets via query or per-model defaults for better demos
+    const camx = QueryArgs.getFloat('camx', null);
+    const camy = QueryArgs.getFloat('camy', null);
+    const camz = QueryArgs.getFloat('camz', null);
+    const yaw = QueryArgs.getFloat('yaw', null);
+    const pitch = QueryArgs.getFloat('pitch', null);
+    const speed = QueryArgs.getFloat('speed', null);
+    const model = (QueryArgs.getString('model', 'fox') || 'fox').toLowerCase();
+    // Apply per-model sensible defaults if no explicit camera params provided
+    if (camx !== null && camy !== null && camz !== null) {
+      camera.position.set(camx, camy, camz);
+    } else {
+      if (model === 'sponza') {
+        camera.position.set(0, 2.5, 8);
+      } else if (model === 'dragon') {
+        camera.position.set(0, 0.8, 2.5);
+      } else {
+        camera.position.set(0, 0.8, 4);
+      }
+    }
+    if (yaw !== null) this.flyControls.yaw = yaw as any;
+    if (pitch !== null) this.flyControls.pitch = pitch as any;
+    if (speed !== null) this.flyControls.moveSpeed = speed as any;
 
     
     window.addEventListener('resize', () => {
