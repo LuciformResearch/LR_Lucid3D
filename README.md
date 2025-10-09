@@ -69,6 +69,54 @@ Usage
 
 The script will add remotes if missing, commit (when there are local changes and a message is provided), and push to both remotes with tags.
 
+## Demo flags and controls
+
+Append query parameters to the demo URL to switch modes or tweak behavior.
+
+Rendering
+- `deferred=1`: use the deferred renderer (omit for forward).
+- `gbufTargets=2|3`: number of G-Buffer color targets (default 3).
+  - 2 RTs: G0=albedo+metallic, G1=normal (octa in RG) + roughness (B), A=1.
+  - 3 RTs: G0=albedo+metallic, G1=normal+roughness, G2=emissive+ao.
+- `oct=1`: enable octa normal encode/decode with `gbufTargets=2`.
+- `albedo=1`: lighting debug, show albedo only.
+- `gbuf=G0|G1|G2`: debug viewer for a single G-Buffer target (G2 shows black in 2-RT mode).
+
+Models
+- `model=fox|sponza|dragon` (default `fox`).
+- `modelurl=...`: load a custom glTF path (e.g. `assets/stanford_dragon_pbr/scene.gltf`).
+
+Animations / metrics
+- `noanim=1`: disable animation updates (skinning uploads suppressed after first buffer creation).
+- `metrics=1`: show aggregated WebGPU metrics in the overlay every 0.25s (buffers/bindGroups/textureViews/writes/bytes).
+
+Camera presets
+- `camx`, `camy`, `camz`: initial camera position.
+- `yaw`, `pitch`: initial orientation (radians).
+- `speed`: initial fly speed.
+
+Fly camera controls
+- Move: ZQSD (AZERTY) or WASD (QWERTY)
+- Vertical: Up = R/E/Space, Down = Ctrl/C
+- Mouse: hold left button to yaw/pitch
+- Wheel: adjust speed
+- Per-model defaults (if no `cam*`):
+  - Fox: (0, 0.8, 4)
+  - Dragon: (0, 0.8, 2.5)
+  - Sponza: (0, 2.5, 8)
+
+Examples
+- Forward Fox: `https://localhost:4400/?model=fox`
+- Deferred Dragon (reduced G-Buffer cost): `https://localhost:4400/?deferred=1&model=dragon&gbufTargets=2&oct=1&metrics=1`
+- Deferred Sponza baseline: `https://localhost:4400/?deferred=1&model=sponza&metrics=1`
+
+## Notes on current state
+
+- Deferred supports 2-RT mode with octa normal packing to reduce bandwidth (`gbufTargets=2&oct=1`).
+- Skin storage buffer binding honors `minBindingSize=80` (dummy buffer when no skin).
+- Forward big-vertex-buffer is recreated safely on geometry changes (no in-use destroy).
+- The overlay (forward + deferred) shows FPS, textures present, and optional metrics.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See the `LICENSE` file for details.

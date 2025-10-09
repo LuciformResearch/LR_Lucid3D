@@ -1,138 +1,85 @@
-# Regenerate Context — What Changed and Where to Look
+# Regenerate Context — Current State, Flags, and Next Steps (Oct 2025)
 
-This document reconstructs the context of all meaningful changes and the main hot spots in the codebase, so you can jump back in quickly.
+This document summarizes the renderer state (forward + deferred), runtime flags, debug tools, key file locations, and planned work. It provides enough context to resume quickly in a future session.
 
-## TL;DR
-- Fixed GLTF skinning end‑to‑end (loader + buffers + shader) so animated models render correctly in WebGPU.
-- Standardized vertex layout (notably `TANGENT` as vec4) and fixed big‑vertex‑buffer packing.
-- Added runtime debug overlay and useful query flags.
-- Wrote dual push helper to GitLab + GitHub.
-- Cleaned up docs and added migration notes.
-
-## Run/Build
+## Build/Run
 - Dev: `npm start` then open `https://localhost:4400`
 - Prod: `npm run build` then serve `index.html` via a static server
 
-## Useful Query Flags (append to URL)
-- `?noskin=1` → disables skin bind group, binds a dummy buffer (useSkinning=0). Useful to isolate skinning issues.
-- `?only4=1` → force 4 influences (zeros JOINTS_1/WEIGHTS_1) in the interleaved vertex buffer for debugging.
+## Runtime Flags (URL Query)
+- `deferred=1` — enable deferred renderer (else forward).
+- `gbufTargets=2|3` — G-Buffer color targets (default 3). 2-RT mode reduces bandwidth:
+  - 2 RTs: G0=albedo+metallic, G1=normal(octa RG)+roughness(B), A=1.
+  - 3 RTs: G0=albedo+metallic, G1=normal+roughness, G2=emissive+ao.
+- `oct=1` — enable octa normal encode/decode when `gbufTargets=2`.
+- `albedo=1` — debug: force lighting to albedo-only.
+- `gbuf=G0|G1|G2` — debug viewer for a G-Buffer target (G2 shows black in 2-RT mode).
+- `metrics=1` — overlay metrics snapshot every 0.25s: `buffersCreated`, `bindGroupsCreated`, `textureViewsCreated`, `writes`, `bytes`.
+- `noanim=1` — disable animation updates (skinning upload suppressed after buffer creation).
+- Model selection:
+  - `model=fox|sponza|dragon` (default fox)
+  - `modelurl=...` — override path for a custom glTF (e.g., `assets/stanford_dragon_pbr/scene.gltf`).
+- Camera:
+  - `camx`, `camy`, `camz` — initial camera position
+  - `yaw`, `pitch` — initial orientation (radians)
+  - `speed` — fly speed
 
+## Camera Controls
+- Move: ZQSD (AZERTY) or WASD (QWERTY)
+- Vertical: Up = R/E/Space, Down = Ctrl/C
+- Mouse: hold left button to yaw/pitch
+- Wheel: adjust speed
+- Per-model defaults (if no `cam*`): Fox (0,0.8,4), Dragon (0,0.8,2.5), Sponza (0,2.5,8)
 
-## Files Changed (Core Logic)
+## Debug Overlay
+- Shows FPS, animation info, texture flags, and (if `metrics=1`) the metrics snapshot.
+- Works in both forward and deferred.
 
-1) `src/components/WebgpuApp/Lucid3D/Loaders/GLTF2WGPU2.ts`
-- What: Robust accessor extraction for interleaved data and correct offsets.
-- Changes:
-  - De‑interleaving via DataView when `byteStride != 0`.
-  - Uses `byteOffset = bufferView.byteOffset + accessor.byteOffset`.
-  - Applies `normalized` after extraction.
-  - Adds light logging to inspect weights’ sums.
-- Why: Previously JOINTS/WEIGHTS were read with wrong offsets/stride → huge bogus indices and broken animation.
+## Deferred Pipeline
+- Geometry pass writes G-Buffer (2 or 3 RTs). 2-RT mode packs normal via octa (RG) + roughness (B) to reduce fill/bandwidth.
+- Lighting pass is a full-screen triangle; samples G-Buffer via `textureSampleLevel`.
+- Debug viewer (`gbuf=...`) uses `textureLoad` and clamps UVs.
+- Skin storage buffer minBindingSize=80 enforced when no skin (16 header + identity mat4): avoids validation errors.
 
-2) `src/components/WebgpuApp/Lucid3D/PBRMaterial/WebgpuMaterial.ts`
-- What:
-  - Fixed big vertex buffer packing (no corruption when some attributes are missing).
-  - Binds a skinning bind group for the transform; adds a dummy group(2) when `?noskin=1` (minBindingSize=80 bytes: 16 header + 64 for one mat4).
-  - Adds optional `?only4=1` path to zero out JOINTS_1/WEIGHTS_1 for debug.
-- Why: Data corruption in the packed vertex buffer caused deformations; missing bind groups caused validation errors.
+## Forward Pipeline
+- Interleaved big-vertex-buffer assembled when attributes change (single write). Recreated safely when stride/vertex-count change (no immediate destroy) to avoid “used while destroyed”.
+- Skin dummy binding used when no skin.
 
-3) `src/components/WebgpuApp/Lucid3D/PBRMaterial/shaders/research/vertex.wgsl`
-- What (skinning path):
-  - Joints read as `vec4<f32>` then cast to `i32` in shader (the buffer provides floats).
-  - Normalization across 8 weights (`WEIGHTS_0 + WEIGHTS_1`).
-  - Removed invalid WGSL ternaries (replaced with if/else where needed).
-- Why: Match CPU vertex layout and ensure stable, normalized blending across all joint influences.
+## Performance & Caching (implemented)
+- Cached scene traversal and one-time `SetLocations` per geometry.
+- MVP: compute `proj*view` once per frame; per-mesh only multiply the model.
+- Deferred G-Buffer material packs MVP/Model/Normal/flags into a single 224-byte uniform write per draw.
+- Lighting debug/normal variants only recreate bind groups as needed; swapchain view created once per frame in lighting.
+- Metrics overlay to track resource churn and upload volume (anti‑flood).
 
-4) `src/components/WebgpuApp/Lucid3D/WebgpuGeom.ts`
-- What: `TANGENT` now has 4 components (vec4). Attribute types updated so `JOINTS_0/1` use `float32x` consistently (shader casts to `i32`).
-- Why: Prevents vertex attribute layout mismatches → no shader validator errors or interleaving shifts.
+## Current Status
+- Dragon + Sponza load in both forward and deferred (camera presets added to stay above ground).
+- 2‑RT octa path working; visuals a bit darker vs 3‑RT (expected — will tune post‑validation).
+- Forward stabilized (buffer size alignment, VBO resize safety); overlay parity with deferred.
+- Observed: Sponza deferred can be 1–2 FPS (likely fill‑rate/bandwidth bound). Use `gbufTargets=2&oct=1` to reduce G‑Buffer cost for profiling.
 
-5) `src/components/WebgpuApp/Lucid3D/WebgpuTransform.ts`
-- What: Skinning storage buffer sizing & writes adjusted to WGSL alignment.
-  - Use 16‑byte header + matrices at offset 16.
-  - Write matrices with `floatArray.buffer` starting at offset 16.
-  - Ensure a small buffer with header is returned when no skin is present.
-- Why: Aligns storage with WGSL rules, fixes minBindingSize and buffer content correctness.
+## Next Steps (Showcase Many Point Lights)
+1) Multi‑light support in deferred
+   - Add `?lights=N` and allocate a storage buffer of N point lights.
+   - Optional compute pass to update light positions/colors (like webgpu‑samples), else CPU init + per‑frame jitter.
+   - Accumulate lighting in fragment shader for baseline demo (clustered/tiled later if needed).
 
-6) `src/components/WebgpuApp/Lucid3D/WebgpuSkin.ts`
-- What: Same storage alignment/write strategy as above (offset 16) when skin buffers are built here.
-- Why: Keep consistency wherever skin buffers are produced.
+2) G‑Buffer tuning
+   - Recommend `gbufTargets=2` when AO/Emissive unused. Keep `gbufTargets` configurable.
+   - If needed, add half‑res G1/G2 + upsample path.
 
-7) `src/components/WebgpuApp/Lucid3D/WebgpuSceneRenderer.ts`
-- What: Pass the node transform into `material.drawGeometry(...)` so the material can bind the appropriate skin bind group per transform.
-- Why: Allows per‑mesh skin buffer to be used during draws.
+3) UX
+   - Optional pointer‑lock for mouse look.
+   - Simple UI toggles for `gbufTargets`, `oct`, `noanim`, and model switching.
 
-8) `src/components/WebgpuApp/Lucid3D/WebgpuMain.ts`
-- What:
-  - Calls `OnUpdate(dt)` for animations each frame (was missing → animations didn’t advance).
-  - Integrates `debugOverlay` to show runtime stats (skinning status, joints, animations, time).
-- Why: Make animation actually animate and make live diagnosis easier.
+## Key Files
+- Deferred: `src/lucid3d/Deferred/DeferredRenderer.ts`, `src/lucid3d/Deferred/WebgpuGBufferMaterial.ts`, `src/lucid3d/Deferred/WebgpuSceneRendererGBuffer.ts`, shaders in `src/lucid3d/Deferred/shaders/`.
+- Forward: `src/lucid3d/PBRMaterial/WebgpuMaterial.ts`, shaders under `src/lucid3d/PBRMaterial/shaders/`, `src/lucid3d/WebgpuSceneRenderer.ts`.
+- Common: camera `src/lucid3d/WebgpuOrbitControls.ts`, main loop `src/lucid3d/WebgpuMain.ts`, geometry `src/lucid3d/WebgpuGeom.ts`, GLTF loader `src/lucid3d/Loaders/GLTF2WGPU2.ts`, overlay `src/components/WebgpuApp/util/debug-overlay.ts`, query args `src/components/WebgpuApp/util/query-args.ts`, metrics `src/lucid3d/util/metrics.ts`.
+- Models: Fox (`assets/Fox/glTF/Fox.gltf`), Sponza (`assets/media/gltf/sponza/Sponza.gltf`), Dragon (`assets/stanford_dragon_pbr/scene.gltf`).
 
-9) `src/components/WebgpuApp/util/debug-overlay.ts`
-- What: Small DOM overlay showing key runtime values.
-- Why: Fast visibility into skinning state, anim time, etc.
-
-
-## Files Changed (Tooling/Docs)
-
-- `package.json`: added `build` script.
-- `README.md`: rewritten in English; explains requirements, usage, build, troubleshooting; includes dual push notes.
-- `dual_push.sh`: helper to push to GitLab (origin) and GitHub (github).
-- `OldProjectMigration.md`: notes comparing the older archive vs this repo.
-- `WebXR_Migration_Plan.md`: plan to re‑introduce WebXR (WebGL XR path + optional WebGPU XR in the future).
-
-
-## Skinning Buffer Layout (Summary)
-- Header: 16 bytes
-  - Currently used to store `useSkinning` (int) and padding.
-- Matrices: start at offset 16
-  - Two mat4 per joint (skinning + normal) laid out consecutively.
-- Dummy buffer: 80 bytes (16 header + one mat4) bound when `?noskin=1`.
-
-
-## Vertex Packing (Summary)
-- The material constructs a single large vertex buffer with all attributes interleaved by location.
-- Packing uses a location‑indexed array to avoid shifting when an attribute is missing.
-- `TANGENT` is vec4 (matches shader). `JOINTS_0/1` are written as float arrays; shader casts to i32.
-
-
-## Where to Look (Hot Spots)
-- Loader & accessors: `src/components/WebgpuApp/Lucid3D/Loaders/GLTF2WGPU2.ts`
-- Materials & vertex packing: `src/components/WebgpuApp/Lucid3D/PBRMaterial/WebgpuMaterial.ts`
-- Skinning shader (WGSL): `src/components/WebgpuApp/Lucid3D/PBRMaterial/shaders/research/vertex.wgsl`
-- Skin buffers: `src/components/WebgpuApp/Lucid3D/WebgpuTransform.ts`, `src/components/WebgpuApp/Lucid3D/WebgpuSkin.ts`
-- Scene traversal/draw: `src/components/WebgpuApp/Lucid3D/WebgpuSceneRenderer.ts`
-- App loop + overlay: `src/components/WebgpuApp/Lucid3D/WebgpuMain.ts`, `src/components/WebgpuApp/util/debug-overlay.ts`
-
-
-## Known Toggles / Diagnostics
-- `?noskin=1`: binds dummy group(2) (useSkinning=0). Desktop render OK; isolates skin issues.
-- `?only4=1`: forces 4 influences in packing (zeros JOINTS_1/WEIGHTS_1); helps isolate second‑set problems.
-- Console logs: prints first vertex’s joints/weights on first draw; prints weight sums for early sanity.
-
-
-## Notes
-- WebXR: The repo contains scaffolding (`webxr-button.ts`, XR types), but XR presentation is not wired up by default. See `WebXR_Migration_Plan.md` for a safe, incremental re‑integration strategy.
-- Do not revert loader/vertex/shader fixes with older archive versions; they contain the root‑cause fixes for animation/stretching.
-
-
-
-## Upcoming Features (Deferred/PBR Roadmap)
-- GBuffer geometry quality
-  - Normal mapping via TBN (use tangent.w sign, normal map texture)
-  - Metallic/Roughness from MR texture (B/G) — DONE in GBuffer path
-  - AO from R channel — DONE in GBuffer path
-  - Emissive RGB — DONE in GBuffer path
-- Lighting pass
-  - BRDF Cook–Torrance GGX/Smith + Schlick Fresnel — DONE basic directional
-  - Lights buffer (directional/point/spot) via storage buffer
-  - IBL: irradiance + prefiltered specular + BRDF LUT
-  - Tone mapping (ACES), exposure control
-- Engine abstractions
-  - IMaterialPass: drawForward/drawGBuffer hooks per material
-  - Pipeline cache keyed by attachment state (formats/sampleCount)
-  - Optional RenderGraph for pass ordering and dependencies
-- Effects & extras
-  - SSAO/SSGI, SSR, contact shadows (screen space)
-  - Parallax occlusion mapping (POM); later displacement options
-  - TAA + motion vectors (optional), temporal reprojection for SSR/SSAO
+## Quick Profiles
+- Forward Fox: `?model=fox`
+- Deferred Dragon (reduced G‑Buffer cost): `?deferred=1&model=dragon&gbufTargets=2&oct=1&metrics=1`
+- Deferred Sponza baseline: `?deferred=1&model=sponza&metrics=1`
+- Isolate CPU uploads: add `&noanim=1`
