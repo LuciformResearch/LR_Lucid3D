@@ -9,6 +9,7 @@ import { DeferredRenderer } from './Deferred/DeferredRenderer';
 import { WebgpuSceneRendererGBuffer } from './Deferred/WebgpuSceneRendererGBuffer';
 import { QueryArgs } from '../components/WebgpuApp/util/query-args';
 import { Metrics } from './util/metrics';
+import { AbstractionForwardPBRDemo } from './WebgpuSamples/abstractions_forward_pbr_demo';
 
 
 
@@ -33,6 +34,7 @@ export class WebgpuMain {
   private _fpsFrames: number;
   private _fps: number;
   private _overlayAccum: number;
+  private absDemo?: AbstractionForwardPBRDemo;
   constructor(public readonly canvasElem) {
     this.Ready = new Promise((resolve, reject) => {
 
@@ -101,15 +103,21 @@ export class WebgpuMain {
 
 
 
-    this.cubeTest = new CubeRenderTest(this);
-    await this.cubeTest.initialize();
+    const useAbsDemo = QueryArgs.getBool('absDemo', false);
+    if (useAbsDemo) {
+      this.absDemo = new AbstractionForwardPBRDemo(this.device, this.presentationFormat, this.presentationSize[0], this.presentationSize[1]);
+      await this.absDemo.initialize();
+    } else {
+      this.cubeTest = new CubeRenderTest(this);
+      await this.cubeTest.initialize();
 
-    this.gltfTest = new GltfRenderTest(this);
-    await this.gltfTest.initialize();
+      this.gltfTest = new GltfRenderTest(this);
+      await this.gltfTest.initialize();
 
-    if (QueryArgs.getBool('deferred', false)) {
-      this.deferred = new DeferredRenderer(this);
-      await this.deferred.initialize(this.gltfTest.transforms as any);
+      if (QueryArgs.getBool('deferred', false)) {
+        this.deferred = new DeferredRenderer(this);
+        await this.deferred.initialize(this.gltfTest.transforms as any);
+      }
     }
     this.isReady = true;
 
@@ -199,6 +207,7 @@ export class WebgpuMain {
       };
 
       if (this.deferred) this.deferred.onResize();
+      if (this.absDemo) this.absDemo.resize(this.presentationSize[0], this.presentationSize[1]);
 
     });
     
@@ -211,6 +220,16 @@ export class WebgpuMain {
     this.projectionMatrix = this.flyControls.camera.projectionMatrix.toArray() as mat4;
 
     const commandEncoder = this.device.createCommandEncoder();
+    if (this.absDemo) {
+      // Compose viewProj and draw demo
+      const viewMatrix = this.flyControls.camera.GetMatrixWorld().invert().toArray() as mat4;
+      const viewProj = mat4.create();
+      mat4.multiply(viewProj, this.projectionMatrix, viewMatrix);
+      const swapView = this.context.getCurrentTexture().createView();
+      this.absDemo.draw(commandEncoder, swapView, viewProj);
+      this.device.queue.submit([commandEncoder.finish()]);
+      return;
+    }
     let passEncoder: GPURenderPassEncoder | null = null;
     if (!this.deferred) {
       // Forward path uses MSAA resolve into swapchain; set per-frame resolveTarget only here
