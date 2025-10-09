@@ -29,9 +29,12 @@ export class GltfRenderTest {
 		let loader = new Gltf2Loader(this.renderer);
 		
     const model = (QueryArgs.getString('model', 'fox') || 'fox').toLowerCase();
-    const url = model === 'sponza'
-      ? 'assets/media/gltf/sponza/Sponza.gltf'
-      : 'assets/Fox/glTF/Fox.gltf';
+    const overrideUrl = QueryArgs.getString('modelurl', '');
+    const url = overrideUrl || (
+      model === 'sponza' ? 'assets/media/gltf/sponza/Sponza.gltf'
+      : model === 'dragon' ? 'assets/stanford_dragon_pbr/scene.gltf'
+      : 'assets/Fox/glTF/Fox.gltf'
+    );
     loader.loadFromUrl(url).then((value) => {
 			
 			this.transforms.push(value.transformRoot);
