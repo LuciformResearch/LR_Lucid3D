@@ -25,6 +25,8 @@ export class WebgpuMaterial
 	occlusionTexture?: WebgpuTexture;
 	emissiveTexture?: WebgpuTexture;
 	bigVertexBuffer: GPUBuffer;
+	private cachedStride: number = 0;
+	private cachedPosCount: number = 0;
 	// Bind group cache for skinning buffers by transform
 	bySkinBindGroup: {[index: string] : GPUBindGroup} = {};
     private dummySkinBuffer: GPUBuffer | null = null;
@@ -296,19 +298,21 @@ export class WebgpuMaterial
 
 
 		}
-		if (this.bigVertexBuffer == undefined)
-		{
-			this.bigVertexBuffer = this.renderer.device.createBuffer({
-				usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-				size: posCount * Float32Array.BYTES_PER_ELEMENT * offset
-			});
+		// Ensure big vertex buffer has correct size for current geometry
+		const arrayStride: number = offset;
+		const requiredSize = Math.max(0, posCount) * arrayStride;
+		const needRebuildVB = (!this.bigVertexBuffer) || (this.bigVertexBuffer.size !== requiredSize) || updated.updated || this.cachedStride !== arrayStride || this.cachedPosCount !== posCount;
+		if (needRebuildVB) {
+			// Do not destroy an in-use buffer; allocate a new one and keep the old alive until GPU is done
+			this.bigVertexBuffer = this.renderer.device.createBuffer({ usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST, size: requiredSize });
+			this.cachedStride = arrayStride;
+			this.cachedPosCount = posCount;
 			updated.updated = true;
 		}
 		
 		if (updated.updated)
 		{
 				let vertexIndex = 0;
-				let arrayStride: number = offset;
 
 				// Debug/toggles
 				const only4 = QueryArgs.getBool('only4', false);
@@ -378,7 +382,8 @@ export class WebgpuMaterial
 		
 		// If a skinning buffer exists for this transform and not disabled by noskin, bind it at group 2
 		const noSkin = QueryArgs.getBool('noskin', false);
-		if (!noSkin && tr && tr.skinBuffer) {
+		const hasRealSkin = (!!tr && (tr as any).mesh && (tr as any).mesh.skin && (tr as any).mesh.skin.joints && (tr as any).mesh.skin.joints.length > 0);
+		if (!noSkin && hasRealSkin && tr && tr.skinBuffer) {
 			const skinUUID = UniqueIDHelper.GetUUID(tr as any);
 			if (!this.bySkinBindGroup[skinUUID]) {
 				this.bySkinBindGroup[skinUUID] = this.renderer.device.createBindGroup({

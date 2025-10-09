@@ -3,6 +3,7 @@ import { WebgpuAnimation } from "../WebgpuAnimation";
 import { WebgpuTransform } from "../WebgpuTransform";
 import { WebgpuMain } from "../WebgpuMain";
 import { WebgpuSceneRenderer } from "../WebgpuSceneRenderer";
+import { QueryArgs } from "../../components/WebgpuApp/util/query-args";
 
 
 export class GltfRenderTest {
@@ -27,8 +28,11 @@ export class GltfRenderTest {
 	async initialize() {
 		let loader = new Gltf2Loader(this.renderer);
 		
-    // loader.loadFromUrl("assets/Fox/glTF/Fox.gltf").then((value) => {
-    loader.loadFromUrl("assets/media/gltf/sponza/Sponza.gltf").then((value) => {
+    const model = (QueryArgs.getString('model', 'fox') || 'fox').toLowerCase();
+    const url = model === 'sponza'
+      ? 'assets/media/gltf/sponza/Sponza.gltf'
+      : 'assets/Fox/glTF/Fox.gltf';
+    loader.loadFromUrl(url).then((value) => {
 			
 			this.transforms.push(value.transformRoot);
 			this.animations = this.animations.concat(value.animations);

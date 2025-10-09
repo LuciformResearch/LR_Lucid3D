@@ -225,9 +225,11 @@ export class AbstractDynamicAttributeBase extends AbstractAttributeBase
 			}
 			if(this._webgpuBuffer == undefined)
 			{
+				// WebGPU requires size to be a multiple of 4 when mappedAtCreation is true
+				const alignedSize = (array.byteLength + 3) & ~3;
 				let buffer = material.renderer.device.createBuffer({
 					usage: this.isIndices ? GPUBufferUsage.INDEX : GPUBufferUsage.VERTEX,
-					size: array.byteLength, mappedAtCreation: true
+					size: alignedSize, mappedAtCreation: true
 				});
 				this._webgpuBuffer = buffer;
 				if(this.isIndices)
