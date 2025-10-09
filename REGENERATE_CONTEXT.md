@@ -115,3 +115,24 @@ This document reconstructs the context of all meaningful changes and the main ho
 - WebXR: The repo contains scaffolding (`webxr-button.ts`, XR types), but XR presentation is not wired up by default. See `WebXR_Migration_Plan.md` for a safe, incremental re‑integration strategy.
 - Do not revert loader/vertex/shader fixes with older archive versions; they contain the root‑cause fixes for animation/stretching.
 
+
+
+## Upcoming Features (Deferred/PBR Roadmap)
+- GBuffer geometry quality
+  - Normal mapping via TBN (use tangent.w sign, normal map texture)
+  - Metallic/Roughness from MR texture (B/G) — DONE in GBuffer path
+  - AO from R channel — DONE in GBuffer path
+  - Emissive RGB — DONE in GBuffer path
+- Lighting pass
+  - BRDF Cook–Torrance GGX/Smith + Schlick Fresnel — DONE basic directional
+  - Lights buffer (directional/point/spot) via storage buffer
+  - IBL: irradiance + prefiltered specular + BRDF LUT
+  - Tone mapping (ACES), exposure control
+- Engine abstractions
+  - IMaterialPass: drawForward/drawGBuffer hooks per material
+  - Pipeline cache keyed by attachment state (formats/sampleCount)
+  - Optional RenderGraph for pass ordering and dependencies
+- Effects & extras
+  - SSAO/SSGI, SSR, contact shadows (screen space)
+  - Parallax occlusion mapping (POM); later displacement options
+  - TAA + motion vectors (optional), temporal reprojection for SSR/SSAO

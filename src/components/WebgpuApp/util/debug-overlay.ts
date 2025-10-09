@@ -4,6 +4,15 @@ type OverlayState = {
   animations: number;
   channels: number;
   time: string;
+  fps?: number;
+  // Texture debug info
+  textures?: {
+    hasBaseTexture: boolean;
+    hasMRTexture: boolean;
+    hasNormalTexture: boolean;
+    hasAOTexture: boolean;
+    hasEmissiveTexture: boolean;
+  };
 };
 
 class DebugOverlay {
@@ -37,9 +46,20 @@ class DebugOverlay {
       `channels: ${state.channels}`,
       `time: ${state.time}`,
     ];
+    if (state.fps !== undefined) lines.unshift(`fps: ${state.fps.toFixed(0)}`);
+    
+    // Add texture debug info
+    if (state.textures) {
+      lines.push('--- Textures ---');
+      lines.push(`Base: ${state.textures.hasBaseTexture ? '✓' : '✗'}`);
+      lines.push(`MR: ${state.textures.hasMRTexture ? '✓' : '✗'}`);
+      lines.push(`Normal: ${state.textures.hasNormalTexture ? '✓' : '✗'}`);
+      lines.push(`AO: ${state.textures.hasAOTexture ? '✓' : '✗'}`);
+      lines.push(`Emissive: ${state.textures.hasEmissiveTexture ? '✓' : '✗'}`);
+    }
+    
     el.innerHTML = lines.join('<br/>');
   }
 }
 
 export const debugOverlay = new DebugOverlay();
-

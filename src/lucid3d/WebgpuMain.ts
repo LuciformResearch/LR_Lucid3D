@@ -5,6 +5,9 @@ import { WebgpuFlyControls, WebgpuPerspectiveCamera } from './WebgpuOrbitControl
 import { CubeRenderTest } from './WebgpuSamples/CubeGeometry';
 import { GltfRenderTest } from './WebgpuSamples/gltfRenderTest';
 import { debugOverlay } from '../components/WebgpuApp/util/debug-overlay';
+import { DeferredRenderer } from './Deferred/DeferredRenderer';
+import { WebgpuSceneRendererGBuffer } from './Deferred/WebgpuSceneRendererGBuffer';
+import { QueryArgs } from '../components/WebgpuApp/util/query-args';
 
 
 
@@ -22,8 +25,12 @@ export class WebgpuMain {
   depthTexture: GPUTexture;
   renderTarget: GPUTexture;
   renderTargetView: GPUTextureView;
+  deferred: DeferredRenderer | null = null;
   cubeTest: CubeRenderTest;
   gltfTest: GltfRenderTest;
+  private _fpsAccum: number;
+  private _fpsFrames: number;
+  private _fps: number;
   constructor(public readonly canvasElem) {
     this.Ready = new Promise((resolve, reject) => {
 
@@ -94,11 +101,20 @@ export class WebgpuMain {
 
     this.cubeTest = new CubeRenderTest(this);
     await this.cubeTest.initialize();
-    
 
     this.gltfTest = new GltfRenderTest(this);
     await this.gltfTest.initialize();
+
+    if (QueryArgs.getBool('deferred', false)) {
+      this.deferred = new DeferredRenderer(this);
+      await this.deferred.initialize(this.gltfTest.transforms as any);
+    }
     this.isReady = true;
+
+    // FPS tracking
+    this._fpsAccum = 0;
+    this._fpsFrames = 0;
+    this._fps = 0;
     
     input.ListenDomElement(this.canvasElem);
     let camera = new WebgpuPerspectiveCamera();
@@ -157,6 +173,8 @@ export class WebgpuMain {
         },
       };
 
+      if (this.deferred) this.deferred.onResize();
+
     });
     
   }
@@ -203,11 +221,41 @@ export class WebgpuMain {
       });
     }
 
-    this.gltfTest.draw(passEncoder);
+    // FPS accumulate
+    this._fpsAccum += dt;
+    this._fpsFrames++;
+    if (this._fpsAccum >= 0.25) { // update ~4x per second
+      this._fps = this._fpsFrames / this._fpsAccum;
+      this._fpsAccum = 0;
+      this._fpsFrames = 0;
+    }
 
+    if (!this.deferred) {
+      // Forward path
+      this.gltfTest.draw(passEncoder);
+      passEncoder.end();
+      this.device.queue.submit([commandEncoder.finish()]);
+      return;
+    }
+
+    // Deferred path: geometry pass writes into g-buffers
     passEncoder.end();
-    
-    
+    this.deferred.drawGeometry(commandEncoder);
+    this.deferred.lightingPass(commandEncoder);
     this.device.queue.submit([commandEncoder.finish()]);
+
+    // Update overlay with fps and texture info
+    if (this.gltfTest && this.gltfTest.animations) {
+      // already updated inside above block, re-update with fps
+      debugOverlay.update({
+        useSkinning: false,
+        joints: 0,
+        animations: this.gltfTest.animations.length,
+        channels: 0,
+        time: '',
+        fps: this._fps,
+        textures: this.deferred?.sceneRenderer?.textureFlags,
+      } as any);
+    }
   }
 }

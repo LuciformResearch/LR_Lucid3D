@@ -38,6 +38,7 @@ function dev()
 {
     config.mode = 'development';
     config.devtool = 'source-map';
+    config.output.devtoolModuleFilenameTemplate = info => `webpack:///${info.resourcePath}`;
     config.plugins.push(
         new (require('browser-sync-webpack-plugin'))({
             port: 4400,

@@ -20,17 +20,25 @@ export class WebgpuMaterial
 	ready: boolean = false;
 	locations: AttributePlacement[] = [];
 	baseColorTexture: WebgpuTexture;
+	metallicRoughnessTexture?: WebgpuTexture;
+	normalTexture?: WebgpuTexture;
+	occlusionTexture?: WebgpuTexture;
+	emissiveTexture?: WebgpuTexture;
 	bigVertexBuffer: GPUBuffer;
 	// Bind group cache for skinning buffers by transform
 	bySkinBindGroup: {[index: string] : GPUBindGroup} = {};
     private dummySkinBuffer: GPUBuffer | null = null;
     private dummySkinBindGroup: GPUBindGroup | null = null;
 
-	constructor(public readonly renderer: WebgpuMain, options?: {baseColorTexture: WebgpuTexture})
+	constructor(public readonly renderer: WebgpuMain, options?: {baseColorTexture?: WebgpuTexture, metallicRoughnessTexture?: WebgpuTexture, normalTexture?: WebgpuTexture, occlusionTexture?: WebgpuTexture, emissiveTexture?: WebgpuTexture})
 	{
 		if(options != undefined)
 		{
 			this.baseColorTexture = options.baseColorTexture;
+			this.metallicRoughnessTexture = options.metallicRoughnessTexture;
+			this.normalTexture = options.normalTexture;
+			this.occlusionTexture = options.occlusionTexture;
+			this.emissiveTexture = options.emissiveTexture;
 		}
 		Promise.resolve(this.initialize());
 	}

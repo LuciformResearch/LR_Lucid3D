@@ -419,9 +419,6 @@ export class Gltf2Loader {
 
         function getTexture(textureInfo): WebgpuTexture {
             if (!textureInfo) {
-
-                //throw new Error("NO TEXTURE INFO");
-                console.error("NO TEXTURE INFO");
                 return null;
             }
             return textures[textureInfo.index];
@@ -433,7 +430,11 @@ export class Gltf2Loader {
             for (let material of json.materials) {
                 let pbr = material.pbrMetallicRoughness || {};
                 let baseColorTexture = getTexture(pbr.baseColorTexture);
-                let mat = new WebgpuMaterial(this.main, { baseColorTexture });
+                let metallicRoughnessTexture = getTexture(pbr.metallicRoughnessTexture);
+                let normalTexture = getTexture(material.normalTexture);
+                let occlusionTexture = getTexture(material.occlusionTexture);
+                let emissiveTexture = getTexture(material.emissiveTexture);
+                let mat = new WebgpuMaterial(this.main, { baseColorTexture, metallicRoughnessTexture, normalTexture, occlusionTexture, emissiveTexture });
 
                 materials.push(mat);
                 /*      let glMaterial = new PBRCompositeMaterial<any, any>(undefined, undefined);
