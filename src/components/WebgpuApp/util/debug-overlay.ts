@@ -13,6 +13,13 @@ type OverlayState = {
     hasAOTexture: boolean;
     hasEmissiveTexture: boolean;
   };
+  metrics?: {
+    buffersCreated: number;
+    bindGroupsCreated: number;
+    textureViewsCreated: number;
+    writes: number;
+    bytes: number;
+  };
 };
 
 class DebugOverlay {
@@ -56,6 +63,15 @@ class DebugOverlay {
       lines.push(`Normal: ${state.textures.hasNormalTexture ? '✓' : '✗'}`);
       lines.push(`AO: ${state.textures.hasAOTexture ? '✓' : '✗'}`);
       lines.push(`Emissive: ${state.textures.hasEmissiveTexture ? '✓' : '✗'}`);
+    }
+    // Metrics, if enabled
+    if (state.metrics) {
+      lines.push('--- Metrics (0.25s) ---');
+      lines.push(`buffers: ${state.metrics.buffersCreated}`);
+      lines.push(`bindGroups: ${state.metrics.bindGroupsCreated}`);
+      lines.push(`textureViews: ${state.metrics.textureViewsCreated}`);
+      lines.push(`writes: ${state.metrics.writes}`);
+      lines.push(`bytes: ${state.metrics.bytes}`);
     }
     
     el.innerHTML = lines.join('<br/>');

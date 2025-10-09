@@ -27,7 +27,8 @@ export class GltfRenderTest {
 	async initialize() {
 		let loader = new Gltf2Loader(this.renderer);
 		
-		loader.loadFromUrl("assets/Fox/glTF/Fox.gltf").then((value) => {
+    // loader.loadFromUrl("assets/Fox/glTF/Fox.gltf").then((value) => {
+    loader.loadFromUrl("assets/media/gltf/sponza/Sponza.gltf").then((value) => {
 			
 			this.transforms.push(value.transformRoot);
 			this.animations = this.animations.concat(value.animations);

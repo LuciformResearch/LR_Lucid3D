@@ -39,13 +39,10 @@ fn main(in: FSIn) -> @location(0) vec4<f32> {
   // GBuffer render targets are in top-left origin; screen UV here is bottom-left.
   let uv = vec2<f32>(in.uv.x, 1.0 - in.uv.y);
   
-  // Use textureLoad for consistency with debug viewer
-  let dims = textureDimensions(gAlbedoTex);
-  let coords = vec2<i32>(i32(uv.x * f32(dims.x)), i32(uv.y * f32(dims.y)));
-  
-  let g0 = textureLoad(gAlbedoTex, coords, 0);             // rgb=albedo, a=metallic
-  let g1 = textureLoad(gNormalRoughTex, coords, 0);        // xyz=normalW, a=roughness
-  let g2 = textureLoad(gEmissiveAoTex, coords, 0);         // rgb=emissive, a=ao
+  // Sample textures at LOD 0
+  let g0 = textureSampleLevel(gAlbedoTex, gSampler, uv, 0.0);       // rgb=albedo, a=metallic
+  let g1 = textureSampleLevel(gNormalRoughTex, gSampler, uv, 0.0);  // xyz=normalW, a=roughness
+  let g2 = textureSampleLevel(gEmissiveAoTex, gSampler, uv, 0.0);   // rgb=emissive, a=ao
   
   // DEBUG: Force albedo-only rendering (uncomment to debug)
   // return vec4<f32>(g0.rgb, 1.0);

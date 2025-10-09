@@ -37,13 +37,19 @@ struct FragOut {
 
 @fragment
 fn main(in: FSIn) -> FragOut {
-  // Albedo from base color texture (sRGB textures ideally sampled accordingly)
+  // Albedo/MR sampling guarded by flags to avoid unnecessary texture fetches
   let uv = in.uv0;
-  let albedo = textureSample(baseTexture, baseSampler, uv);
-  // Metallic-Roughness texture: B=metallic, G=roughness
-  let mr = textureSample(mrTexture, mrSampler, uv);
-  let metallic = mr.b;
-  let roughness = mr.g;
+  var albedo = vec4<f32>(1.0, 1.0, 1.0, 1.0);
+  if (uniforms.hasBaseTexture > 0.5) {
+    albedo = textureSample(baseTexture, baseSampler, uv);
+  }
+  var metallic = 0.0;
+  var roughness = 1.0;
+  if (uniforms.hasMRTexture > 0.5) {
+    let mr = textureSample(mrTexture, mrSampler, uv);
+    metallic = mr.b;
+    roughness = mr.g;
+  }
   // Normal mapping (fallback to geometric normal if tangent invalid)
   let nW = normalize(in.normalW);
   var n = nW;

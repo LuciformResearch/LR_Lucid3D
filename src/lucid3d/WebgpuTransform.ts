@@ -6,6 +6,7 @@ import {AbstractMeshBase, AbstractMeshGroup} from "./WebgpuMesh";
 import {MathHelper} from "./Math/MathHelper";
 import {LocRotScale} from "./Math/MathHelper";
 import {WebgpuSceneRenderer} from "./WebgpuSceneRenderer";
+import { Metrics } from './util/metrics';
 
 // pour l'instant virer cette classe transform, mettre tout dans mesh base, 
 // et ensuite on verra eventuellement pour une foncitonnalité du genre GetComponent(Transform)
@@ -58,6 +59,7 @@ export class WebgpuTransform
 								size: size * Float32Array.BYTES_PER_ELEMENT + 16,
 								usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
 							});
+							if (Metrics.isEnabled()) Metrics.incBuffers(1);
 							floatArray = new Float32Array(size);
 						}
 						for(let i = 0; i < skin.joints.length; i++)
@@ -66,8 +68,10 @@ export class WebgpuTransform
 							floatArray.set(mat, i * 16 * 2);
 						}
 							device.queue.writeBuffer(matricesStorage, 0, new Int32Array([1]).buffer, 0, Int32Array.BYTES_PER_ELEMENT);
+							if (Metrics.isEnabled()) Metrics.addWrite(Int32Array.BYTES_PER_ELEMENT);
 							// matrices start at 16-byte offset to respect WGSL alignment
 							device.queue.writeBuffer(matricesStorage, 16, floatArray.buffer, 0, size * Float32Array.BYTES_PER_ELEMENT);
+							if (Metrics.isEnabled()) Metrics.addWrite(size * Float32Array.BYTES_PER_ELEMENT);
 						return (matricesStorage);
 					}
 				}
@@ -86,7 +90,9 @@ export class WebgpuTransform
 								size: 16,
 								usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
 							});
+						if (Metrics.isEnabled()) Metrics.incBuffers(1);
 						device.queue.writeBuffer(matricesStorage, 0, new Int32Array([0]).buffer, 0, Int32Array.BYTES_PER_ELEMENT);
+						if (Metrics.isEnabled()) Metrics.addWrite(Int32Array.BYTES_PER_ELEMENT);
 					}
 					return (matricesStorage);
 				}

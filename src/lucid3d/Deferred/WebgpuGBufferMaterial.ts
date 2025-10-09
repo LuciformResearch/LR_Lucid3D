@@ -4,6 +4,7 @@ import { QueryArgs } from '../../components/WebgpuApp/util/query-args';
 import { AbstractDynamicGeom, AttributeComponentCount, AttributePlacement, AttributeType } from '../WebgpuGeom';
 import { WebgpuTransform } from '../WebgpuTransform';
 import { TypedArray, WebgpuTexture } from '../Loaders/GLTF2WGPU2';
+import { Metrics } from '../util/metrics';
 
 let vertWGSL = require('./shaders/gbuffer_geometry.vert.wgsl').default;
 let fragWGSL = require('./shaders/gbuffer_geometry.frag.wgsl').default;
@@ -26,6 +27,10 @@ export class WebgpuGBufferMaterial {
   occlusionTexture?: WebgpuTexture;
   emissiveTexture?: WebgpuTexture;
   normalTexture?: WebgpuTexture;
+  // Skinning bind group per transform
+  private bySkinBindGroup: { [index: string]: GPUBindGroup } = {};
+  private dummySkinBuffer: GPUBuffer | null = null;
+  private dummySkinBindGroup: GPUBindGroup | null = null;
   
   // Texture availability flags for debugging
   get textureFlags() {
@@ -50,13 +55,12 @@ export class WebgpuGBufferMaterial {
   }
 
   private async initialize(options?: { formats?: GPUTextureFormat[], sampleCount?: number }) {
-    const defaultAttributes = [
+    // Only include attributes required by GBuffer shaders
+    const defaultAttributes: AttributePlacement[] = [
       AttributePlacement.POSITION,
       AttributePlacement.NORMAL,
       AttributePlacement.TANGENT,
-      AttributePlacement.COLOR,
       AttributePlacement.TEXCOORD_0,
-      AttributePlacement.TEXCOORD_1,
       AttributePlacement.JOINTS_0,
       AttributePlacement.WEIGHTS_0,
       AttributePlacement.JOINTS_1,
@@ -77,16 +81,95 @@ export class WebgpuGBufferMaterial {
     const bigLayout: GPUVertexBufferLayout = { arrayStride, attributes };
 
     const device = this.renderer.device;
-    const formats = options?.formats || [ this.renderer.presentationFormat, 'rgba16float', 'rgba8unorm' ];
+    const formats = options?.formats || [ this.renderer.presentationFormat, 'rgba8unorm', 'rgba8unorm' ];
     const sampleCount = options?.sampleCount || QueryArgs.getInt('samples', 1);
     const noCull = QueryArgs.getBool('nocull', false);
     const noDepth = QueryArgs.getBool('nodepth', false);
+
+    // Choose fragment shader variant based on target count (2 or 3)
+    const targetCount = formats.length;
+    let fragModuleCode = fragWGSL as string;
+    if (targetCount === 2) {
+      fragModuleCode = `
+      struct Uniforms {
+        mvp : mat4x4<f32>,
+        model : mat4x4<f32>,
+        normal : mat4x4<f32>,
+        hasBaseTexture : f32,
+        hasMRTexture : f32,
+        hasNormalTexture : f32,
+        hasAOTexture : f32,
+        hasEmissiveTexture : f32,
+      };
+      @group(0) @binding(0) var<uniform> uniforms : Uniforms;
+      @group(1) @binding(0) var baseSampler: sampler;
+      @group(1) @binding(1) var baseTexture: texture_2d<f32>;
+      @group(1) @binding(2) var mrSampler: sampler;
+      @group(1) @binding(3) var mrTexture: texture_2d<f32>;
+      @group(1) @binding(8) var normalSampler: sampler;
+      @group(1) @binding(9) var normalTexture: texture_2d<f32>;
+      struct FSIn {
+        @location(0) uv0: vec2<f32>,
+        @location(1) normalW: vec3<f32>,
+        @location(2) tangentW: vec3<f32>,
+        @location(3) bitangentW: vec3<f32>,
+      };
+      fn octEncode(n: vec3<f32>) -> vec2<f32> {
+        var x = n.x;
+        var y = n.y;
+        var z = n.z;
+        let invL1 = 1.0 / (abs(x) + abs(y) + abs(z) + 1e-8);
+        x = x * invL1;
+        y = y * invL1;
+        z = z * invL1;
+        if (z < 0.0) {
+          let sx = select(-1.0, 1.0, x >= 0.0);
+          let sy = select(-1.0, 1.0, y >= 0.0);
+          let nx = (1.0 - abs(y)) * sx;
+          let ny = (1.0 - abs(x)) * sy;
+          x = nx;
+          y = ny;
+        }
+        return vec2<f32>(x, y);
+      }
+      struct FragOut {
+        @location(0) g0: vec4<f32>, // albedo.rgb, metallic.a
+        @location(1) g1: vec4<f32>, // normal(oct.xy), roughness.b
+      };
+      @fragment
+      fn main(in: FSIn) -> FragOut {
+        let uv = in.uv0;
+        var albedo = vec4<f32>(1.0, 1.0, 1.0, 1.0);
+        if (uniforms.hasBaseTexture > 0.5) { albedo = textureSample(baseTexture, baseSampler, uv); }
+        var metallic = 0.0;
+        var roughness = 1.0;
+        if (uniforms.hasMRTexture > 0.5) {
+          let mr = textureSample(mrTexture, mrSampler, uv);
+          metallic = mr.b; roughness = mr.g;
+        }
+        let nW = normalize(in.normalW);
+        var n = nW;
+        let tLen = length(in.tangentW);
+        let hasNormalTex = uniforms.hasNormalTexture > 0.5;
+        if (tLen > 1e-5 && hasNormalTex) {
+          let nTex = textureSampleLevel(normalTexture, normalSampler, uv, 0.0).xyz;
+          let nTexDecoded = 2.0 * nTex - vec3<f32>(1.0, 1.0, 1.0);
+          let tbn = mat3x3<f32>(normalize(in.tangentW), normalize(in.bitangentW), nW);
+          n = normalize(tbn * nTexDecoded);
+        }
+        var out: FragOut;
+        out.g0 = vec4<f32>(albedo.rgb, metallic);
+        let enc = octEncode(n) * 0.5 + vec2<f32>(0.5, 0.5);
+        out.g1 = vec4<f32>(enc, roughness, 1.0);
+        return out;
+      }`;
+    }
 
     this.pipeline = device.createRenderPipeline({
       layout: 'auto',
       vertex: { module: device.createShaderModule({ code: vertWGSL }), entryPoint: 'main', buffers: [bigLayout] },
       fragment: {
-        module: device.createShaderModule({ code: fragWGSL }),
+        module: device.createShaderModule({ code: fragModuleCode }),
         entryPoint: 'main',
         targets: formats.map((fmt) => ({ format: fmt })),
       },
@@ -114,18 +197,29 @@ export class WebgpuGBufferMaterial {
     const nmTexPlaceholder = makeTex([128,128,255,255]);
 
     this.bindGroup0 = device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: this.uniformBuffer } }]});
-    const makeBG = (b, m, a, e, n) => device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(1), entries: [
-      { binding: 0, resource: sampler },
-      { binding: 1, resource: b.createView() },
-      { binding: 2, resource: sampler },
-      { binding: 3, resource: m.createView() },
-      { binding: 4, resource: sampler },
-      { binding: 5, resource: a.createView() },
-      { binding: 6, resource: sampler },
-      { binding: 7, resource: e.createView() },
-      { binding: 8, resource: sampler },
-      { binding: 9, resource: n.createView() },
-    ]});
+    if (Metrics.isEnabled()) Metrics.incBindGroups(1);
+    const makeBG = (b, m, a, e, n) => {
+      const entries: GPUBindGroupEntry[] = [];
+      // Base color (0,1)
+      entries.push({ binding: 0, resource: sampler });
+      entries.push({ binding: 1, resource: b.createView() });
+      // MR (2,3)
+      entries.push({ binding: 2, resource: sampler });
+      entries.push({ binding: 3, resource: m.createView() });
+      // Optional AO (4,5) and Emissive (6,7) only if pipeline expects them (targetCount===3)
+      if (formats.length === 3) {
+        entries.push({ binding: 4, resource: sampler });
+        entries.push({ binding: 5, resource: a.createView() });
+        entries.push({ binding: 6, resource: sampler });
+        entries.push({ binding: 7, resource: e.createView() });
+      }
+      // Normal (8,9)
+      entries.push({ binding: 8, resource: sampler });
+      entries.push({ binding: 9, resource: n.createView() });
+      const bg = device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(1), entries });
+      if (Metrics.isEnabled()) Metrics.incBindGroups(1);
+      return bg;
+    };
     this.bindGroup1 = makeBG(baseTexPlaceholder, mrTexPlaceholder, aoTexPlaceholder, emTexPlaceholder, nmTexPlaceholder);
 
     // If real textures exist, update bind group asynchronously when ready
@@ -208,6 +302,7 @@ export class WebgpuGBufferMaterial {
     if (needRebuild) {
       this.bigVertexBuffer?.destroy();
       this.bigVertexBuffer = this.renderer.device.createBuffer({ size: posCount * arrayStride, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+      if (Metrics.isEnabled()) Metrics.incBuffers(1);
       // Build interleaved CPU buffer once, then a single writeBuffer
       const floatsPerVertex = arrayStride / Float32Array.BYTES_PER_ELEMENT;
       const vb = new Float32Array(posCount * floatsPerVertex);
@@ -235,37 +330,36 @@ export class WebgpuGBufferMaterial {
         }
       }
       this.renderer.device.queue.writeBuffer(this.bigVertexBuffer, 0, vb.buffer, 0, vb.byteLength);
+      if (Metrics.isEnabled()) Metrics.addWrite(vb.byteLength);
       this.cachedStride = arrayStride;
       this.cachedPosCount = posCount;
     }
 
-    // Write MVP, Model, Normal
+    // Write MVP, Model, Normal, and texture flags in a single upload (224 bytes)
     const m = mvp as unknown as Float32Array;
     const mdl = model as unknown as Float32Array;
     const nrm = normal as unknown as Float32Array;
     const q = this.renderer.device.queue;
-    // Coerce to Float32Array if not already (defensive)
     const mArr = (m instanceof Float32Array) ? m : Float32Array.from(m as unknown as number[]);
     const mdlArr = (mdl instanceof Float32Array) ? mdl : Float32Array.from(mdl as unknown as number[]);
     const nrmArr = (nrm instanceof Float32Array) ? nrm : Float32Array.from(nrm as unknown as number[]);
-    q.writeBuffer(this.uniformBuffer, 0, mArr.buffer, mArr.byteOffset, mArr.byteLength);
-    q.writeBuffer(this.uniformBuffer, 64, mdlArr.buffer, mdlArr.byteOffset, mdlArr.byteLength);
-    q.writeBuffer(this.uniformBuffer, 128, nrmArr.buffer, nrmArr.byteOffset, nrmArr.byteLength);
-    
-    // Write texture availability flags
-    const textureFlags = new Float32Array([
-      this.baseColorTexture ? 1.0 : 0.0,
-      this.metallicRoughnessTexture ? 1.0 : 0.0,
-      this.normalTexture ? 1.0 : 0.0,
-      this.occlusionTexture ? 1.0 : 0.0,
-      this.emissiveTexture ? 1.0 : 0.0,
-    ]);
-    q.writeBuffer(this.uniformBuffer, 192, textureFlags.buffer, textureFlags.byteOffset, textureFlags.byteLength);
+
+    // 3*16 floats for matrices + 8 floats for flags/padding = 56 floats (224 bytes)
+    const packed = new Float32Array(16 * 3 + 8);
+    packed.set(mArr, 0);
+    packed.set(mdlArr, 16);
+    packed.set(nrmArr, 32);
+    packed[48] = this.baseColorTexture ? 1.0 : 0.0;
+    packed[49] = this.metallicRoughnessTexture ? 1.0 : 0.0;
+    packed[50] = this.normalTexture ? 1.0 : 0.0;
+    packed[51] = this.occlusionTexture ? 1.0 : 0.0;
+    packed[52] = this.emissiveTexture ? 1.0 : 0.0;
+    // remaining 3 floats left as 0 for alignment
+    q.writeBuffer(this.uniformBuffer, 0, packed.buffer, 0, packed.byteLength);
+    if (Metrics.isEnabled()) Metrics.addWrite(packed.byteLength);
     if (this.trace) {
-      console.log('[GBufferMaterial] Uniforms', {
-        mvpBytes: mArr.byteLength,
-        modelBytes: mdlArr.byteLength,
-        normalBytes: nrmArr.byteLength,
+      console.log('[GBufferMaterial] Uniforms (single upload)', {
+        totalBytes: packed.byteLength,
       });
     }
 
@@ -273,6 +367,32 @@ export class WebgpuGBufferMaterial {
     passEncoder.setPipeline(this.pipeline);
     passEncoder.setBindGroup(0, this.bindGroup0);
     passEncoder.setBindGroup(1, this.bindGroup1);
+    // Skinning group(2): always bind a valid buffer (dummy if no skin)
+    const noSkin = QueryArgs.getBool('noskin', false);
+    const tr: WebgpuTransform | undefined = (geom as any).ownerTransform as WebgpuTransform | undefined;
+    if (!noSkin && tr && tr.skinBuffer) {
+      const key = (tr as any).srcNodeId != null ? String((tr as any).srcNodeId) : String((tr as any));
+      if (!this.bySkinBindGroup[key]) {
+        this.bySkinBindGroup[key] = this.renderer.device.createBindGroup({
+          layout: this.pipeline.getBindGroupLayout(2),
+          entries: [{ binding: 0, resource: { buffer: tr.skinBuffer } }],
+        });
+      }
+      passEncoder.setBindGroup(2, this.bySkinBindGroup[key]);
+    } else {
+      // Ensure a dummy buffer exists with useSkinning=0
+      if (!this.dummySkinBuffer) {
+        this.dummySkinBuffer = this.renderer.device.createBuffer({ size: 80, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        this.renderer.device.queue.writeBuffer(this.dummySkinBuffer, 0, new Int32Array([0]).buffer);
+      }
+      if (!this.dummySkinBindGroup) {
+        this.dummySkinBindGroup = this.renderer.device.createBindGroup({
+          layout: this.pipeline.getBindGroupLayout(2),
+          entries: [{ binding: 0, resource: { buffer: this.dummySkinBuffer } }],
+        });
+      }
+      passEncoder.setBindGroup(2, this.dummySkinBindGroup);
+    }
     passEncoder.setVertexBuffer(0, this.bigVertexBuffer);
     if (indexAttr) {
       const ib = indexAttr.getWebgpuBuffer(this);

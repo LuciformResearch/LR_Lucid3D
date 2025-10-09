@@ -8,6 +8,7 @@ import { debugOverlay } from '../components/WebgpuApp/util/debug-overlay';
 import { DeferredRenderer } from './Deferred/DeferredRenderer';
 import { WebgpuSceneRendererGBuffer } from './Deferred/WebgpuSceneRendererGBuffer';
 import { QueryArgs } from '../components/WebgpuApp/util/query-args';
+import { Metrics } from './util/metrics';
 
 
 
@@ -31,6 +32,7 @@ export class WebgpuMain {
   private _fpsAccum: number;
   private _fpsFrames: number;
   private _fps: number;
+  private _overlayAccum: number;
   constructor(public readonly canvasElem) {
     this.Ready = new Promise((resolve, reject) => {
 
@@ -115,6 +117,8 @@ export class WebgpuMain {
     this._fpsAccum = 0;
     this._fpsFrames = 0;
     this._fps = 0;
+    this._overlayAccum = 0;
+    Metrics.setEnabled(QueryArgs.getBool('metrics', false));
     
     input.ListenDomElement(this.canvasElem);
     let camera = new WebgpuPerspectiveCamera();
@@ -185,40 +189,20 @@ export class WebgpuMain {
     this.flyControls.Update(dt);
     this.projectionMatrix = this.flyControls.camera.projectionMatrix.toArray() as mat4;
 
-    this.renderPassDescriptor.colorAttachments[0].resolveTarget = this.context
-      .getCurrentTexture()
-      .createView();
-      const commandEncoder = this.device.createCommandEncoder();
-      let passEncoder = commandEncoder.beginRenderPass(this.renderPassDescriptor);
+    const commandEncoder = this.device.createCommandEncoder();
+    let passEncoder: GPURenderPassEncoder | null = null;
+    if (!this.deferred) {
+      // Forward path uses MSAA resolve into swapchain; set per-frame resolveTarget only here
+      this.renderPassDescriptor.colorAttachments[0].resolveTarget = this.context
+        .getCurrentTexture()
+        .createView();
+      passEncoder = commandEncoder.beginRenderPass(this.renderPassDescriptor);
+    }
 
-    // Update animations if any
-    if (this.gltfTest && this.gltfTest.animations) {
-      let channels = 0;
-      for (const anim of this.gltfTest.animations) {
-        anim.OnUpdate(dt);
-        channels += (anim.channels ? anim.channels.length : 0);
-      }
-      // Gather skin/joints info from the loaded scene
-      let hasSkin = false;
-      let joints = 0;
-      if (this.gltfTest.transforms && this.gltfTest.transforms.length > 0) {
-        const stack = [...this.gltfTest.transforms];
-        while (stack.length) {
-          const tr: any = stack.pop();
-          if (tr && tr.mesh && tr.mesh.skin && tr.mesh.skin.joints) {
-            hasSkin = tr.mesh.skin.joints.length > 0 || hasSkin;
-            joints = Math.max(joints, tr.mesh.skin.joints.length || 0);
-          }
-          if (tr && tr.childs) stack.push(...tr.childs);
-        }
-      }
-      debugOverlay.update({
-        useSkinning: hasSkin,
-        joints,
-        animations: this.gltfTest.animations.length,
-        channels,
-        time: this.gltfTest.animations.length > 0 ? `${this.gltfTest.animations[0].currentTime.toFixed(2)} / ${this.gltfTest.animations[0].maxTime.toFixed(2)}` : '0 / 0',
-      });
+    // Update animations if any (can be disabled via ?noanim=1)
+    const noAnim = QueryArgs.getBool('noanim', false);
+    if (!noAnim && this.gltfTest && this.gltfTest.animations) {
+      for (const anim of this.gltfTest.animations) anim.OnUpdate(dt);
     }
 
     // FPS accumulate
@@ -232,30 +216,56 @@ export class WebgpuMain {
 
     if (!this.deferred) {
       // Forward path
-      this.gltfTest.draw(passEncoder);
-      passEncoder.end();
+      this.gltfTest.draw(passEncoder!);
+      passEncoder!.end();
       this.device.queue.submit([commandEncoder.finish()]);
       return;
     }
 
     // Deferred path: geometry pass writes into g-buffers
-    passEncoder.end();
+    // Deferred path does not use the forward render pass
+    if (passEncoder) passEncoder.end();
     this.deferred.drawGeometry(commandEncoder);
     this.deferred.lightingPass(commandEncoder);
     this.device.queue.submit([commandEncoder.finish()]);
 
-    // Update overlay with fps and texture info
-    if (this.gltfTest && this.gltfTest.animations) {
-      // already updated inside above block, re-update with fps
-      debugOverlay.update({
-        useSkinning: false,
-        joints: 0,
-        animations: this.gltfTest.animations.length,
-        channels: 0,
-        time: '',
+    // Throttled overlay: FPS + textures + animation/skin info
+    this._overlayAccum += dt;
+    if (this._overlayAccum >= 0.25) {
+      let channels = 0;
+      let hasSkin = false;
+      let joints = 0;
+      let timeStr = '';
+      const anims = (this.gltfTest?.animations && !noAnim) ? this.gltfTest.animations : [];
+      if (anims.length > 0) {
+        for (const anim of anims) channels += (anim.channels ? anim.channels.length : 0);
+        timeStr = `${anims[0].currentTime.toFixed(2)} / ${anims[0].maxTime.toFixed(2)}`;
+      }
+      if (this.gltfTest?.transforms && this.gltfTest.transforms.length > 0) {
+        const stack = [...this.gltfTest.transforms];
+        while (stack.length) {
+          const tr: any = stack.pop();
+          if (tr && tr.mesh && tr.mesh.skin && tr.mesh.skin.joints) {
+            hasSkin = tr.mesh.skin.joints.length > 0 || hasSkin;
+            joints = Math.max(joints, tr.mesh.skin.joints.length || 0);
+          }
+          if (tr && tr.childs) stack.push(...tr.childs);
+        }
+      }
+      const overlay: any = {
+        useSkinning: hasSkin,
+        joints,
+        animations: anims.length,
+        channels,
+        time: timeStr,
         fps: this._fps,
         textures: this.deferred?.sceneRenderer?.textureFlags,
-      } as any);
+      };
+      if (QueryArgs.getBool('metrics', false)) {
+        overlay.metrics = Metrics.snapshotAndReset();
+      }
+      debugOverlay.update(overlay);
+      this._overlayAccum = 0;
     }
   }
 }
