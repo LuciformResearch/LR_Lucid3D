@@ -85,14 +85,23 @@ export class WebgpuTransform
 					}
 					if(matricesStorage == undefined)
 					{
-							// Allocate 16 bytes header to satisfy alignment even without matrices
+							// Allocate at least 80 bytes (16 header + 64 first mat4) to satisfy minBindingSize
 							matricesStorage = device.createBuffer({
-								size: 16,
+								size: 80,
 								usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
 							});
 						if (Metrics.isEnabled()) Metrics.incBuffers(1);
+						// useSkinning = 0
 						device.queue.writeBuffer(matricesStorage, 0, new Int32Array([0]).buffer, 0, Int32Array.BYTES_PER_ELEMENT);
 						if (Metrics.isEnabled()) Metrics.addWrite(Int32Array.BYTES_PER_ELEMENT);
+						// write identity mat at first slot (optional safety)
+						const I = new Float32Array([
+							1,0,0,0,
+							0,1,0,0,
+							0,0,1,0,
+							0,0,0,1
+						]);
+						device.queue.writeBuffer(matricesStorage, 16, I.buffer);
 					}
 					return (matricesStorage);
 				}

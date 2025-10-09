@@ -264,6 +264,9 @@ export class WebgpuMain {
       if (QueryArgs.getBool('metrics', false)) {
         overlay.metrics = Metrics.snapshotAndReset();
       }
+      // Provide texture flags from either deferred or forward renderer
+      const texFlags = this.deferred?.sceneRenderer?.textureFlags || this.gltfTest?.sceneRenderer?.textureFlags;
+      overlay.textures = texFlags as any;
       debugOverlay.update(overlay);
       this._overlayAccum = 0;
     }

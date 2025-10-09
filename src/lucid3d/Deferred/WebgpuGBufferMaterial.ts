@@ -300,7 +300,7 @@ export class WebgpuGBufferMaterial {
     }
     const needRebuild = (!this.bigVertexBuffer || this.bigVertexBuffer.size !== posCount * arrayStride || updated.updated || this.cachedStride !== arrayStride || this.cachedPosCount !== posCount);
     if (needRebuild) {
-      this.bigVertexBuffer?.destroy();
+      // Do not destroy in-use buffer this frame; allocate a fresh one
       this.bigVertexBuffer = this.renderer.device.createBuffer({ size: posCount * arrayStride, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
       if (Metrics.isEnabled()) Metrics.incBuffers(1);
       // Build interleaved CPU buffer once, then a single writeBuffer
@@ -367,10 +367,11 @@ export class WebgpuGBufferMaterial {
     passEncoder.setPipeline(this.pipeline);
     passEncoder.setBindGroup(0, this.bindGroup0);
     passEncoder.setBindGroup(1, this.bindGroup1);
-    // Skinning group(2): always bind a valid buffer (dummy if no skin)
+    // Skinning group(2): bind real skin buffer only if mesh truly has skin, else dummy
     const noSkin = QueryArgs.getBool('noskin', false);
     const tr: WebgpuTransform | undefined = (geom as any).ownerTransform as WebgpuTransform | undefined;
-    if (!noSkin && tr && tr.skinBuffer) {
+    const hasRealSkin = (!!tr && (tr as any).mesh && (tr as any).mesh.skin && (tr as any).mesh.skin.joints && (tr as any).mesh.skin.joints.length > 0);
+    if (!noSkin && hasRealSkin && tr && tr.skinBuffer) {
       const key = (tr as any).srcNodeId != null ? String((tr as any).srcNodeId) : String((tr as any));
       if (!this.bySkinBindGroup[key]) {
         this.bySkinBindGroup[key] = this.renderer.device.createBindGroup({

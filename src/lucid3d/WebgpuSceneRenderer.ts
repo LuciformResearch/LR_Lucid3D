@@ -6,10 +6,29 @@ import { WebgpuMain } from "./WebgpuMain";
 import { WebgpuMaterial } from "./PBRMaterial/WebgpuMaterial";
 
 export class WebgpuSceneRenderer {
-	allMeshes: { mesh: AbstractMeshBase, tr: WebgpuTransform }[] = [];
-	constructor(public renderer: WebgpuMain, public transforms: WebgpuTransform[] = []) {
+  allMeshes: { mesh: AbstractMeshBase, tr: WebgpuTransform }[] = [];
+  constructor(public renderer: WebgpuMain, public transforms: WebgpuTransform[] = []) {
 
-	}
+  }
+  // Expose texture flags (similar to deferred) from the first material found
+  get textureFlags() {
+    for (let i = 0; i < this.transforms.length; i++) {
+      const tr = this.transforms[i];
+      if (tr && tr.mesh && tr.mesh.primitives && tr.mesh.primitives.length > 0) {
+        const mat = tr.mesh.primitives[0].material as any;
+        if (mat) {
+          return {
+            hasBaseTexture: !!mat.baseColorTexture,
+            hasMRTexture: !!mat.metallicRoughnessTexture,
+            hasNormalTexture: !!mat.normalTexture,
+            hasAOTexture: !!mat.occlusionTexture,
+            hasEmissiveTexture: !!mat.emissiveTexture,
+          };
+        }
+      }
+    }
+    return { hasBaseTexture: false, hasMRTexture: false, hasNormalTexture: false, hasAOTexture: false, hasEmissiveTexture: false };
+  }
 	getTransformationMatrix(tr: WebgpuTransform) {
 		let viewMatrix = mat4.create();
 		let projMat = this.renderer.projectionMatrix;
