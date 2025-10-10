@@ -24,11 +24,12 @@ struct FSIn { @location(0) vUv: vec2<f32>, @location(1) vN: vec3<f32> };
   if (USE_MR) { let mr = textureSample(tMR, s, in.vUv); metallic = mr.b; roughness = mr.g; }
   metallic = clamp(metallic + ubo.METAL_ROUGH.x, 0.0, 1.0);
   roughness = clamp(roughness * ubo.METAL_ROUGH.y, 0.04, 1.0);
-  let n = normalize(in.vN);
+  var n = in.vN; if (length(n) < 1e-5) { n = vec3<f32>(0.0,0.0,1.0); } n = normalize(n);
   let l = normalize(vec3<f32>(0.3, 0.8, 0.5));
   let diff = max(dot(n,l), 0.0) * albedo;
   var color = diff;
   if (USE_AO) { let ao = textureSample(tAO, s, in.vUv).r; color *= mix(vec3<f32>(1.0), vec3<f32>(ao), ubo.OCCLUSION_STRENGTH); }
   if (USE_EMISSIVE) { color += textureSample(tEmissive, s, in.vUv).rgb * ubo.EMISSIVE_FACTOR; }
+  if (ALBEDO_ONLY) { return vec4<f32>(albedo, 1.0); }
   return vec4<f32>(color, 1.0);
 }

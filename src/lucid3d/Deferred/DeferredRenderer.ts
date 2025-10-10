@@ -250,7 +250,9 @@ export class DeferredRenderer {
         if (QueryArgs.getBool('oct', true)) {
           const octFn = `\nfn octDecode(e: vec2<f32>) -> vec3<f32> {\n  var v = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));\n  if (v.z < 0.0) {\n    let s = vec2<f32>(select(-1.0, 1.0, v.x >= 0.0), select(-1.0, 1.0, v.y >= 0.0));\n    let xy = (1.0 - abs(vec2<f32>(v.y, v.x))) * s;\n    v = vec3<f32>(xy.x, xy.y, v.z);\n  }\n  return normalize(v);\n}\n`;
           lightingCode = octFn + lightingCode;
-          lightingCode = lightingCode.replace('let n = normalize(g1.xyz);', 'let n = normalize(octDecode(g1.rg * 2.0 - vec2<f32>(1.0, 1.0)));');
+          // Support both decoded-normal patterns depending on 3-RT encoding
+          lightingCode = lightingCode.replace('let n = normalize(g1.xyz * 2.0 - vec3<f32>(1.0, 1.0, 1.0));', 'let n = normalize(octDecode(g1.rg * 2.0 - vec2<f32>(1.0, 1.0)));')
+                                     .replace('let n = normalize(g1.xyz);', 'let n = normalize(octDecode(g1.rg * 2.0 - vec2<f32>(1.0, 1.0)));');
           lightingCode = lightingCode.replace('let roughness = clamp(g1.a, 0.04, 1.0);', 'let roughness = clamp(g1.b, 0.04, 1.0);');
         }
       }

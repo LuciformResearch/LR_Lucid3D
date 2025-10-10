@@ -2,6 +2,7 @@ import { Defines } from './Defines';
 import { composeWGSL, GlobalChunks } from './ShaderChunk';
 import { MaterialDesc } from './MaterialDesc';
 import { Matrix4Uniform, UniformGPUBuffer, UniformRecord, UniformBufferPack, Vector2Uniform, Vector3Uniform, Vector4Uniform, FloatUniform } from './Uniforms';
+import { QueryArgs } from '../../components/WebgpuApp/util/query-args';
 
 // Register a few baseline chunks (small stubs)
 GlobalChunks.register('brdf', require('./chunks/brdf.wgsl').default);
@@ -38,6 +39,7 @@ export class MaterialFactory {
     defines.set('USE_NORMAL', !!desc.textures?.normal);
     defines.set('USE_AO', !!desc.textures?.ao);
     defines.set('USE_EMISSIVE', !!desc.textures?.emissive);
+    defines.set('ALBEDO_ONLY', QueryArgs.getBool('albedo', false));
 
     const vs = composeWGSL(defines.toWgslConsts(), ['tbn'], require('./templates/pbr_forward.vert.wgsl').default);
     const fs = composeWGSL(defines.toWgslConsts(), ['brdf'], require('./templates/pbr_forward.frag.wgsl').default);
@@ -65,15 +67,20 @@ export class MaterialFactory {
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: {} },
         { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: {} },
       ]});
-    const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl0, bgl1]});
+    const bgl2 = device.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+    ]});
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl0, bgl1, bgl2]});
 
     const pipeline = device.createRenderPipeline({
       layout,
       vertex: { module: vert, entryPoint: 'main', buffers: [
-        { arrayStride: 8*4, attributes: [
+        { arrayStride: (3+3+2+4+4)*4, attributes: [
           { shaderLocation: 0, format: 'float32x3', offset: 0 },
           { shaderLocation: 1, format: 'float32x3', offset: 3*4 },
           { shaderLocation: 2, format: 'float32x2', offset: 6*4 },
+          { shaderLocation: 6, format: 'float32x4', offset: 8*4 }, // JOINTS_0 as float, cast to int in shader
+          { shaderLocation: 7, format: 'float32x4', offset: 12*4 }, // WEIGHTS_0
         ]}
       ]},
       fragment: { module: frag, entryPoint: 'main', targets: [{ format }] },
@@ -90,7 +97,9 @@ export class MaterialFactory {
     pushTex(4, desc.textures?.ao);
     pushTex(5, desc.textures?.emissive);
     const bg1 = device.createBindGroup({ layout: bgl1, entries: texEntries });
-    return new ForwardPBRMaterial(device, pipeline, bg0, bg1, uniforms, pack, uboGPU);
+    const mat = new ForwardPBRMaterial(device, pipeline, bg0, bg1, uniforms, pack, uboGPU);
+    (mat as any).bglSkin = bgl2;
+    return mat;
   }
 
   static buildForwardPBRFromDesc(device: GPUDevice, format: GPUTextureFormat, desc: MaterialDesc) {

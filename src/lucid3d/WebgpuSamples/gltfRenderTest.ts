@@ -35,12 +35,10 @@ export class GltfRenderTest {
       : model === 'dragon' ? 'assets/stanford_dragon_pbr/scene.gltf'
       : 'assets/Fox/glTF/Fox.gltf'
     );
-    loader.loadFromUrl(url).then((value) => {
-			
-			this.transforms.push(value.transformRoot);
-			this.animations = this.animations.concat(value.animations);
-			this.sceneRenderer = new WebgpuSceneRenderer(this.renderer, this.transforms);
-		});
+    const value = await loader.loadFromUrl(url);
+    this.transforms.push(value.transformRoot);
+    this.animations = this.animations.concat(value.animations);
+    this.sceneRenderer = new WebgpuSceneRenderer(this.renderer, this.transforms);
 	}
 
 	draw(passEncoder: GPURenderPassEncoder) {

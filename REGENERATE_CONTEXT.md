@@ -58,6 +58,16 @@ This document summarizes the renderer state (forward + deferred), runtime flags,
 - Forward stabilized (buffer size alignment, VBO resize safety); overlay parity with deferred.
 - Observed: Sponza deferred can be 1–2 FPS (likely fill‑rate/bandwidth bound). Use `gbufTargets=2&oct=1` to reduce G‑Buffer cost for profiling.
 
+## Abstractions Mode (Experimental)
+- Toggle: `absDemo=1` runs a forward PBR demo built from new abstractions (shader chunks/defines/material factory).
+- GLTF: Uses the existing loader; builds per‑primitive VBO (pos3+norm3+uv2) and a forward PBR material from textures (albedo/MR/normal/AO/emissive when present).
+- Flags: `albedo=1` now also forces albedo‑only in abstractions (helps debug very dark scenes / texture correctness).
+- Known: Fox (skinned) currently black in abstractions (skinning not yet implemented in the abstraction shaders). Dragon renders but can be dark — use `albedo=1` to verify data flow. Skinning support planned next.
+
+## Known Issues (Oct 2025)
+- Deferred + Multi‑Lights: when `?lights > 0`, model can appear inverted and grey on black. Root cause under investigation (depth/normal reconstruction or coordinate mismatch in the multi‑light path). Workaround: disable lights or use standard deferred without `lights` until fixed.
+- Abstractions Fox: black screen (skinned mesh not handled yet). Abstractions Dragon: renders but dark; use `albedo=1` to validate albedo flow.
+
 ## Next Steps (Showcase Many Point Lights)
 1) Multi‑light support in deferred
    - Add `?lights=N` and allocate a storage buffer of N point lights.
@@ -83,3 +93,5 @@ This document summarizes the renderer state (forward + deferred), runtime flags,
 - Deferred Dragon (reduced G‑Buffer cost): `?deferred=1&model=dragon&gbufTargets=2&oct=1&metrics=1`
 - Deferred Sponza baseline: `?deferred=1&model=sponza&metrics=1`
 - Isolate CPU uploads: add `&noanim=1`
+- Abstractions PBR Dragon: `?absDemo=1&model=dragon`
+- Abstractions albedo‑only check: `?absDemo=1&model=dragon&albedo=1`

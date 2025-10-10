@@ -72,7 +72,9 @@ fn main(in: FSIn) -> FragOut {
     n = vec3<f32>(0.0, 0.0, 1.0);
   }
   
-  let normalRough = vec4<f32>(n, roughness);
+  // Encode normal from [-1,1] to [0,1] to match rgba8unorm storage
+  let encN = 0.5 * n + vec3<f32>(0.5, 0.5, 0.5);
+  let normalRough = vec4<f32>(encN, roughness);
   
   // AO texture uses R channel; emissive.rgb
   var aoR = 1.0; // Default AO value

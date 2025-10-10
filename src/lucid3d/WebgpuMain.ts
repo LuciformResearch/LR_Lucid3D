@@ -104,10 +104,7 @@ export class WebgpuMain {
 
 
     const useAbsDemo = QueryArgs.getBool('absDemo', false);
-    if (useAbsDemo) {
-      this.absDemo = new AbstractionForwardPBRDemo(this.device, this.presentationFormat, this.presentationSize[0], this.presentationSize[1]);
-      await this.absDemo.initialize();
-    } else {
+    if (!useAbsDemo) {
       this.cubeTest = new CubeRenderTest(this);
       await this.cubeTest.initialize();
 
@@ -118,6 +115,13 @@ export class WebgpuMain {
         this.deferred = new DeferredRenderer(this);
         await this.deferred.initialize(this.gltfTest.transforms as any);
       }
+    } else {
+      // Initialize glTF to get transforms and assets, then run abstractions demo on glTF
+      this.gltfTest = new GltfRenderTest(this);
+      await this.gltfTest.initialize();
+      const { AbstractionGltfDemo } = require('./WebgpuSamples/abstractions_gltf_demo');
+      this.absDemo = new AbstractionGltfDemo(this, this.gltfTest.transforms);
+      await this.absDemo.initialize();
     }
     this.isReady = true;
 
@@ -219,6 +223,12 @@ export class WebgpuMain {
     this.flyControls.Update(dt);
     this.projectionMatrix = this.flyControls.camera.projectionMatrix.toArray() as mat4;
 
+    // Update animations if any (can be disabled via ?noanim=1)
+    const noAnim = QueryArgs.getBool('noanim', false);
+    if (!noAnim && this.gltfTest && this.gltfTest.animations) {
+      for (const anim of this.gltfTest.animations) anim.OnUpdate(dt);
+    }
+
     const commandEncoder = this.device.createCommandEncoder();
     if (this.absDemo) {
       // Compose viewProj and draw demo
@@ -239,11 +249,7 @@ export class WebgpuMain {
       passEncoder = commandEncoder.beginRenderPass(this.renderPassDescriptor);
     }
 
-    // Update animations if any (can be disabled via ?noanim=1)
-    const noAnim = QueryArgs.getBool('noanim', false);
-    if (!noAnim && this.gltfTest && this.gltfTest.animations) {
-      for (const anim of this.gltfTest.animations) anim.OnUpdate(dt);
-    }
+    // (moved earlier so absDemo also updates animations)
 
     // FPS accumulate
     this._fpsAccum += dt;
