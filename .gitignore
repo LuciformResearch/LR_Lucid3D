@@ -7,3 +7,6 @@ package-lock.json
 *.ignore
 .env.local
 notes
+
+# Local tools (not part of distribution)
+lr_tools/
