@@ -110,6 +110,29 @@ Examples
 - Deferred Dragon (reduced G-Buffer cost): `https://localhost:4400/?deferred=1&model=dragon&gbufTargets=2&oct=1&metrics=1`
 - Deferred Sponza baseline: `https://localhost:4400/?deferred=1&model=sponza&metrics=1`
 
+## Abstractions (Experimental)
+
+A forward PBR “abstractions” path is available to validate the new shader chunk/defines/material factory layer on glTF scenes.
+
+- Flags
+  - `absDemo=1`: run the abstractions demo (uses the existing glTF loader and builds per‑primitive materials and VBOs).
+  - `albedo=1`: in abstractions mode, forces albedo‑only output to quickly validate texture flow.
+  - `model=fox|dragon|sponza` (or `modelurl=...`) applies as usual.
+
+- Features
+  - Forward PBR stub with WGSL shader chunks/defines.
+  - Skinning supported (Fox anims update in `absDemo` like the normal paths).
+  - Single interleaved VBO layout: POSITION(3), NORMAL(3), UV0(2), JOINTS_0(4), WEIGHTS_0(4).
+
+- Examples
+  - Dragon: `https://localhost:4400/?absDemo=1&model=dragon`
+  - Albedo‑only check: `https://localhost:4400/?absDemo=1&model=dragon&albedo=1`
+  - Fox (skinning): `https://localhost:4400/?absDemo=1&model=fox`
+
+- Notes / Known issues
+  - In deferred + `?lights>0`, a bug currently in the multi‑light pass can invert/gray the model (investigating). Use deferred without `lights` meanwhile.
+  - Abstractions are evolving; a deferred abstraction (encode G‑Buffer from MaterialDesc) is planned to unify forward/deferred.
+
 ## Notes on current state
 
 - Deferred supports 2-RT mode with octa normal packing to reduce bandwidth (`gbufTargets=2&oct=1`).
