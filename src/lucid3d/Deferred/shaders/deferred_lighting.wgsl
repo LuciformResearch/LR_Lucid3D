@@ -49,7 +49,8 @@ fn main(in: FSIn) -> @location(0) vec4<f32> {
 
   let albedo = clamp(g0.rgb, vec3(0.0), vec3(1.0));
   let metallic = clamp(g0.a, 0.0, 1.0);
-  let n = normalize(g1.xyz);
+  // Decode normal from [0,1] back to [-1,1]
+  let n = normalize(g1.xyz * 2.0 - vec3<f32>(1.0, 1.0, 1.0));
   let roughness = clamp(g1.a, 0.04, 1.0);
   
   // DEBUG: Force normal towards camera to fix culling issues

@@ -9,6 +9,7 @@ import { DeferredRenderer } from './Deferred/DeferredRenderer';
 import { WebgpuSceneRendererGBuffer } from './Deferred/WebgpuSceneRendererGBuffer';
 import { QueryArgs } from '../components/WebgpuApp/util/query-args';
 import { Metrics } from './util/metrics';
+import { AbstractionForwardPBRDemo } from './WebgpuSamples/abstractions_forward_pbr_demo';
 
 
 
@@ -33,6 +34,7 @@ export class WebgpuMain {
   private _fpsFrames: number;
   private _fps: number;
   private _overlayAccum: number;
+  private absDemo?: AbstractionForwardPBRDemo;
   constructor(public readonly canvasElem) {
     this.Ready = new Promise((resolve, reject) => {
 
@@ -101,15 +103,25 @@ export class WebgpuMain {
 
 
 
-    this.cubeTest = new CubeRenderTest(this);
-    await this.cubeTest.initialize();
+    const useAbsDemo = QueryArgs.getBool('absDemo', false);
+    if (!useAbsDemo) {
+      this.cubeTest = new CubeRenderTest(this);
+      await this.cubeTest.initialize();
 
-    this.gltfTest = new GltfRenderTest(this);
-    await this.gltfTest.initialize();
+      this.gltfTest = new GltfRenderTest(this);
+      await this.gltfTest.initialize();
 
-    if (QueryArgs.getBool('deferred', false)) {
-      this.deferred = new DeferredRenderer(this);
-      await this.deferred.initialize(this.gltfTest.transforms as any);
+      if (QueryArgs.getBool('deferred', false)) {
+        this.deferred = new DeferredRenderer(this);
+        await this.deferred.initialize(this.gltfTest.transforms as any);
+      }
+    } else {
+      // Initialize glTF to get transforms and assets, then run abstractions demo on glTF
+      this.gltfTest = new GltfRenderTest(this);
+      await this.gltfTest.initialize();
+      const { AbstractionGltfDemo } = require('./WebgpuSamples/abstractions_gltf_demo');
+      this.absDemo = new AbstractionGltfDemo(this, this.gltfTest.transforms);
+      await this.absDemo.initialize();
     }
     this.isReady = true;
 
@@ -199,6 +211,7 @@ export class WebgpuMain {
       };
 
       if (this.deferred) this.deferred.onResize();
+      if (this.absDemo) this.absDemo.resize(this.presentationSize[0], this.presentationSize[1]);
 
     });
     
@@ -210,7 +223,23 @@ export class WebgpuMain {
     this.flyControls.Update(dt);
     this.projectionMatrix = this.flyControls.camera.projectionMatrix.toArray() as mat4;
 
+    // Update animations if any (can be disabled via ?noanim=1)
+    const noAnim = QueryArgs.getBool('noanim', false);
+    if (!noAnim && this.gltfTest && this.gltfTest.animations) {
+      for (const anim of this.gltfTest.animations) anim.OnUpdate(dt);
+    }
+
     const commandEncoder = this.device.createCommandEncoder();
+    if (this.absDemo) {
+      // Compose viewProj and draw demo
+      const viewMatrix = this.flyControls.camera.GetMatrixWorld().invert().toArray() as mat4;
+      const viewProj = mat4.create();
+      mat4.multiply(viewProj, this.projectionMatrix, viewMatrix);
+      const swapView = this.context.getCurrentTexture().createView();
+      this.absDemo.draw(commandEncoder, swapView, viewProj);
+      this.device.queue.submit([commandEncoder.finish()]);
+      return;
+    }
     let passEncoder: GPURenderPassEncoder | null = null;
     if (!this.deferred) {
       // Forward path uses MSAA resolve into swapchain; set per-frame resolveTarget only here
@@ -220,11 +249,7 @@ export class WebgpuMain {
       passEncoder = commandEncoder.beginRenderPass(this.renderPassDescriptor);
     }
 
-    // Update animations if any (can be disabled via ?noanim=1)
-    const noAnim = QueryArgs.getBool('noanim', false);
-    if (!noAnim && this.gltfTest && this.gltfTest.animations) {
-      for (const anim of this.gltfTest.animations) anim.OnUpdate(dt);
-    }
+    // (moved earlier so absDemo also updates animations)
 
     // FPS accumulate
     this._fpsAccum += dt;

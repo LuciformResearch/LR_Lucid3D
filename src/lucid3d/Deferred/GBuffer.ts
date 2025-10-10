@@ -59,11 +59,13 @@ export class GBuffer {
     });
     this.albedoMSAAView = this.albedoMSAA.createView();
 
+    // If sampleCount==1, also allow sampling the depth in lighting
+    const depthUsage = (GPUTextureUsage.RENDER_ATTACHMENT | (this._sampleCount === 1 ? GPUTextureUsage.TEXTURE_BINDING : 0));
     this.depthMSAA = device.createTexture({
       size,
       format: this.formats.depth,
       sampleCount: this._sampleCount,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      usage: depthUsage as GPUTextureUsageFlags,
     });
     this.depthMSAAView = this.depthMSAA.createView();
 
