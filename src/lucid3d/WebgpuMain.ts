@@ -9,9 +9,14 @@ import { DeferredRenderer } from './Deferred/DeferredRenderer';
 import { WebgpuSceneRendererGBuffer } from './Deferred/WebgpuSceneRendererGBuffer';
 import { QueryArgs } from '../components/WebgpuApp/util/query-args';
 import { Metrics } from './util/metrics';
-import { AbstractionForwardPBRDemo } from './WebgpuSamples/abstractions_forward_pbr_demo';
 
 
+
+type AbstractionDemo = {
+  initialize(): Promise<void>;
+  resize(width: number, height: number): void;
+  draw(commandEncoder: GPUCommandEncoder, swapView: GPUTextureView, viewProj: mat4, cameraPos: [number, number, number]): void;
+};
 
 export class WebgpuMain {
   adapter: GPUAdapter;
@@ -34,7 +39,7 @@ export class WebgpuMain {
   private _fpsFrames: number;
   private _fps: number;
   private _overlayAccum: number;
-  private absDemo?: AbstractionForwardPBRDemo;
+  private absDemo: AbstractionDemo | null = null;
   constructor(public readonly canvasElem) {
     this.Ready = new Promise((resolve, reject) => {
 
@@ -103,7 +108,7 @@ export class WebgpuMain {
 
 
 
-    const useAbsDemo = QueryArgs.getBool('absDemo', false);
+    const useAbsDemo = QueryArgs.getBool('absDemo', false) || QueryArgs.getBool('absV2', false);
     if (!useAbsDemo) {
       this.cubeTest = new CubeRenderTest(this);
       await this.cubeTest.initialize();
@@ -235,8 +240,11 @@ export class WebgpuMain {
       const viewMatrix = this.flyControls.camera.GetMatrixWorld().invert().toArray() as mat4;
       const viewProj = mat4.create();
       mat4.multiply(viewProj, this.projectionMatrix, viewMatrix);
+      const cam = this.flyControls.camera;
+      const camPosVec = cam.position as any;
+      const cameraPos: [number, number, number] = [camPosVec.x, camPosVec.y, camPosVec.z];
       const swapView = this.context.getCurrentTexture().createView();
-      this.absDemo.draw(commandEncoder, swapView, viewProj);
+      this.absDemo.draw(commandEncoder, swapView, viewProj, cameraPos);
       this.device.queue.submit([commandEncoder.finish()]);
       return;
     }

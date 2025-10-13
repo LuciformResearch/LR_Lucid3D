@@ -1,10 +1,12 @@
 import { mat4 } from 'gl-matrix';
 import { WebgpuMain } from '../WebgpuMain';
 import { WebgpuTransform } from '../WebgpuTransform';
-import { AbstractionForwardPBRDemo } from './abstractions_forward_pbr_demo';
 import { MaterialFactory, ForwardPBRMaterial } from '../Abstractions/MaterialFactory';
+import { MaterialFactory2 } from '../Abstractions/MaterialFactory2';
 import { AbstractDynamicGeom, AttributeComponentCount, AttributePlacement } from '../WebgpuGeom';
 import { WebgpuMaterial } from '../PBRMaterial/WebgpuMaterial';
+import { QueryArgs } from '../../components/WebgpuApp/util/query-args';
+import { PBRDebugPanel } from './pbr_debug_panel';
 
 type PrimInfo = {
   geom: AbstractDynamicGeom;
@@ -24,6 +26,7 @@ export class AbstractionGltfDemo {
   private depthView: GPUTextureView | null = null;
   private size: [number, number];
   private skinBGCache = new WeakMap<WebgpuTransform, GPUBindGroup>();
+  private useNewPipeline = false;
   constructor(private ctx: WebgpuMain, private transforms: WebgpuTransform[]) {
     this.size = [ctx.presentationSize[0], ctx.presentationSize[1]] as [number, number];
   }
@@ -46,7 +49,11 @@ export class AbstractionGltfDemo {
           if (srcMat?.normalTexture) desc.textures.normal = { view: (await srcMat.normalTexture.GetGPUTex())?.createView() };
           if (srcMat?.occlusionTexture) desc.textures.ao = { view: (await srcMat.occlusionTexture.GetGPUTex())?.createView() };
           if (srcMat?.emissiveTexture) desc.textures.emissive = { view: (await srcMat.emissiveTexture.GetGPUTex())?.createView() };
-          const material = MaterialFactory.buildForward(device, this.ctx.presentationFormat, desc);
+          const useV2 = QueryArgs.getBool('absV2', false);
+          if (useV2) this.useNewPipeline = true;
+          const material = useV2
+            ? MaterialFactory2.buildForward(device, this.ctx.presentationFormat, desc)
+            : MaterialFactory.buildForward(device, this.ctx.presentationFormat, desc);
           // Build interleaved VBO (pos, normal, uv0, tangent optional)
           const geom = prim.geometry as AbstractDynamicGeom;
           // Ensure attribute locations are defined as expected by our pipeline
@@ -64,8 +71,16 @@ export class AbstractionGltfDemo {
               'WEIGHTS_1': AttributePlacement.WEIGHTS_1,
             });
           }
-          // Match the forward PBR pipeline layout: POSITION(3), NORMAL(3), UV0(2), JOINTS0(4), WEIGHTS0(4)
-          const locations = [AttributePlacement.POSITION, AttributePlacement.NORMAL, AttributePlacement.TEXCOORD_0, AttributePlacement.JOINTS_0, AttributePlacement.WEIGHTS_0];
+          // Match the forward PBR pipeline layout: POSITION(3), NORMAL(3), UV0(2), TANGENT(4), UV1(2), JOINTS0(4), WEIGHTS0(4)
+          const locations = [
+            AttributePlacement.POSITION,
+            AttributePlacement.NORMAL,
+            AttributePlacement.TEXCOORD_0,
+            AttributePlacement.TANGENT,
+            AttributePlacement.TEXCOORD_1,
+            AttributePlacement.JOINTS_0,
+            AttributePlacement.WEIGHTS_0,
+          ];
           const byLoc: any = {};
           let indexAttr: any = null;
           for (const k in geom.byNameAttributes) {
@@ -115,6 +130,11 @@ export class AbstractionGltfDemo {
         }
       }
     }
+
+    if (this.useNewPipeline && this.prims.length > 0) {
+      PBRDebugPanel.getInstance().attachMaterials(this.prims.map(p => p.material));
+    }
+
     this.createDepth();
   }
 
@@ -129,7 +149,7 @@ export class AbstractionGltfDemo {
     this.depthView = this.depthTex.createView();
   }
 
-  draw(commandEncoder: GPUCommandEncoder, swapView: GPUTextureView, viewProj: mat4) {
+  draw(commandEncoder: GPUCommandEncoder, swapView: GPUTextureView, viewProj: mat4, cameraPos: [number, number, number]) {
     const pass = commandEncoder.beginRenderPass({
       colorAttachments: [{ view: swapView, clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
       depthStencilAttachment: { view: this.depthView!, depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' },
@@ -139,6 +159,7 @@ export class AbstractionGltfDemo {
       const model = (p.owner.GetMatrixWorld().toArray() as unknown) as Float32Array;
       p.material.setProjView(viewProj as unknown as Float32Array);
       p.material.setModel(model);
+      p.material.setCameraPosition(cameraPos);
       p.material.updateUniforms();
       pass.setPipeline(p.material.pipeline);
       pass.setBindGroup(0, p.material.bindGroup0);

@@ -24,39 +24,49 @@ export class AbstractionForwardPBRDemo {
     });
     this.material.setBaseColorFactor([0.95, 0.55, 0.15, 1.0]);
 
-    // Cube geometry (positions, normals, uvs) interleaved (stride = 8 floats)
-    const P = [
-      // Front
-      -1,-1, 1, 0,0,1, 0,0,
-       1,-1, 1, 0,0,1, 1,0,
-       1, 1, 1, 0,0,1, 1,1,
-      -1, 1, 1, 0,0,1, 0,1,
-      // Back
-       1,-1,-1, 0,0,-1, 0,0,
-      -1,-1,-1, 0,0,-1, 1,0,
-      -1, 1,-1, 0,0,-1, 1,1,
-       1, 1,-1, 0,0,-1, 0,1,
-      // Left
-      -1,-1,-1,-1,0,0, 0,0,
-      -1,-1, 1,-1,0,0, 1,0,
-      -1, 1, 1,-1,0,0, 1,1,
-      -1, 1,-1,-1,0,0, 0,1,
-      // Right
-       1,-1, 1, 1,0,0, 0,0,
-       1,-1,-1, 1,0,0, 1,0,
-       1, 1,-1, 1,0,0, 1,1,
-       1, 1, 1, 1,0,0, 0,1,
-      // Top
-      -1, 1, 1, 0,1,0, 0,0,
-       1, 1, 1, 0,1,0, 1,0,
-       1, 1,-1, 0,1,0, 1,1,
-      -1, 1,-1, 0,1,0, 0,1,
-      // Bottom
-      -1,-1,-1, 0,-1,0, 0,0,
-       1,-1,-1, 0,-1,0, 1,0,
-       1,-1, 1, 0,-1,0, 1,1,
-      -1,-1, 1, 0,-1,0, 0,1,
-    ];
+    // Cube geometry interleaved for pipeline: pos3, norm3, uv2, tangent4, joints4, weights4 (stride = 20 floats)
+    // Pick a simple consistent tangent per face (not perfect but OK for demo)
+    function faceTangent(nx: number, ny: number, nz: number): [number, number, number, number] {
+      if (Math.abs(nx) > 0.5) return [0, 0, 1, nx > 0 ? 1 : -1];
+      if (Math.abs(nz) > 0.5) return [1, 0, 0, nz > 0 ? 1 : -1];
+      return [1, 0, 0, 1];
+    }
+    const jw = [0,0,0,0, 1,0,0,0];
+    const P: number[] = [];
+    const pushV = (px:number,py:number,pz:number, nx:number,ny:number,nz:number, u:number,v:number) => {
+      const t = faceTangent(nx,ny,nz);
+      P.push(px,py,pz, nx,ny,nz, u,v, t[0],t[1],t[2],t[3], u,v, ...jw);
+    };
+    // Front
+    pushV(-1,-1, 1, 0,0,1, 0,0);
+    pushV( 1,-1, 1, 0,0,1, 1,0);
+    pushV( 1, 1, 1, 0,0,1, 1,1);
+    pushV(-1, 1, 1, 0,0,1, 0,1);
+    // Back
+    pushV( 1,-1,-1, 0,0,-1, 0,0);
+    pushV(-1,-1,-1, 0,0,-1, 1,0);
+    pushV(-1, 1,-1, 0,0,-1, 1,1);
+    pushV( 1, 1,-1, 0,0,-1, 0,1);
+    // Left
+    pushV(-1,-1,-1,-1,0,0, 0,0);
+    pushV(-1,-1, 1,-1,0,0, 1,0);
+    pushV(-1, 1, 1,-1,0,0, 1,1);
+    pushV(-1, 1,-1,-1,0,0, 0,1);
+    // Right
+    pushV( 1,-1, 1, 1,0,0, 0,0);
+    pushV( 1,-1,-1, 1,0,0, 1,0);
+    pushV( 1, 1,-1, 1,0,0, 1,1);
+    pushV( 1, 1, 1, 1,0,0, 0,1);
+    // Top
+    pushV(-1, 1, 1, 0,1,0, 0,0);
+    pushV( 1, 1, 1, 0,1,0, 1,0);
+    pushV( 1, 1,-1, 0,1,0, 1,1);
+    pushV(-1, 1,-1, 0,1,0, 0,1);
+    // Bottom
+    pushV(-1,-1,-1, 0,-1,0, 0,0);
+    pushV( 1,-1,-1, 0,-1,0, 1,0);
+    pushV( 1,-1, 1, 0,-1,0, 1,1);
+    pushV(-1,-1, 1, 0,-1,0, 0,1);
     const I = [
       0,1,2, 0,2,3,    4,5,6, 4,6,7,
       8,9,10, 8,10,11, 12,13,14, 12,14,15,
@@ -82,7 +92,12 @@ export class AbstractionForwardPBRDemo {
     this.depthView = this.depthTex.createView();
   }
 
-  draw(commandEncoder: GPUCommandEncoder, swapView: GPUTextureView, viewProj: mat4) {
+  draw(
+    commandEncoder: GPUCommandEncoder,
+    swapView: GPUTextureView,
+    viewProj: mat4,
+    cameraPos: [number, number, number] = [0, 0, 1],
+  ) {
     // Update uniforms (model rotates slowly)
     const model = mat4.create();
     const t = performance.now() * 0.001;
@@ -90,6 +105,7 @@ export class AbstractionForwardPBRDemo {
     mat4.rotateX(model, model, 0.35);
     this.material.setProjView(viewProj as unknown as Float32Array);
     this.material.setModel(model as unknown as Float32Array);
+    this.material.setCameraPosition(cameraPos);
     this.material.updateUniforms();
 
     const pass = commandEncoder.beginRenderPass({
@@ -105,4 +121,3 @@ export class AbstractionForwardPBRDemo {
     pass.end();
   }
 }
-

@@ -1,14 +1,23 @@
-export type TextureRef = { view: GPUTextureView } | null;
+export type TextureTransform = {
+  scale?: [number, number];
+  offset?: [number, number];
+  angleDeg?: number; // rotation in degrees
+};
+export type TextureBinding = {
+  view: GPUTextureView;
+  uvSet?: 0 | 1;
+  uvTransform?: TextureTransform;
+} | null;
 
 export type MaterialDesc = {
   name?: string;
   shading: 'pbr' | 'unlit';
   textures?: {
-    baseColor?: TextureRef;
-    mr?: TextureRef;
-    normal?: TextureRef;
-    ao?: TextureRef;
-    emissive?: TextureRef;
+    baseColor?: TextureBinding;
+    mr?: TextureBinding;
+    normal?: TextureBinding;
+    ao?: TextureBinding;
+    emissive?: TextureBinding;
   };
   scalars?: {
     roughness?: number;
@@ -25,4 +34,3 @@ export type BuildOptions = {
   gbufTargets?: 2 | 3;
   sampleCount?: number;
 };
-

@@ -668,16 +668,61 @@ export class Gltf2Loader {
                 }
 
                 if (!('TANGENT' in primitive.attributes)) {
-                    let indicesArr = 'indices' in primitive ? await indices.floatArray : undefined;
-                    let posArr = await (attributes["POSITION"] as AbstractDynamicAttributeBase).floatArray;
-                    let normals = MathHelper.GetNormalsFromTriangles(Vector3.VectorsFromArray(posArr), indicesArr);
-                    // Fallback: use normals as tangent xyz and w = 1.0
-                    let glAttribute = new AbstractV4Attribute(undefined, "TANGENT");
-                    let flattenedNormals = Vector3.FlattenArray(normals);
-                    const tangents: number[] = [];
-                    for (let i = 0; i < flattenedNormals.length; i += 3) {
-                        tangents.push(flattenedNormals[i + 0], flattenedNormals[i + 1], flattenedNormals[i + 2], 1.0);
+                    // Compute tangents from positions, normals and UVs (TEXCOORD_0)
+                    const posArr = await (attributes["POSITION"] as AbstractDynamicAttributeBase).floatArray as Float32Array;
+                    const uvArr = await (attributes["TEXCOORD_0"] as AbstractDynamicAttributeBase).floatArray as Float32Array;
+                    // Ensure normals exist (generated above if missing)
+                    const nArr = await (attributes["NORMAL"] as AbstractDynamicAttributeBase).floatArray as Float32Array;
+                    const vcount = posArr.length / 3;
+                    const tan = new Float32Array(vcount * 3);
+                    const bit = new Float32Array(vcount * 3);
+                    const idxArr = ('indices' in primitive) ? (await (indices.floatArray)) as any as ArrayLike<number> : undefined;
+                    const triCount = idxArr ? (idxArr.length / 3) : (vcount / 3);
+                    const addVec3 = (arr: Float32Array, i: number, x: number, y: number, z: number) => { arr[i*3+0]+=x; arr[i*3+1]+=y; arr[i*3+2]+=z; };
+                    for (let t = 0; t < triCount; t++) {
+                        const i0 = idxArr ? idxArr[t*3+0] : (t*3+0);
+                        const i1 = idxArr ? idxArr[t*3+1] : (t*3+1);
+                        const i2 = idxArr ? idxArr[t*3+2] : (t*3+2);
+                        const p0x = posArr[i0*3+0], p0y = posArr[i0*3+1], p0z = posArr[i0*3+2];
+                        const p1x = posArr[i1*3+0], p1y = posArr[i1*3+1], p1z = posArr[i1*3+2];
+                        const p2x = posArr[i2*3+0], p2y = posArr[i2*3+1], p2z = posArr[i2*3+2];
+                        const uv0x = uvArr[i0*2+0], uv0y = uvArr[i0*2+1];
+                        const uv1x = uvArr[i1*2+0], uv1y = uvArr[i1*2+1];
+                        const uv2x = uvArr[i2*2+0], uv2y = uvArr[i2*2+1];
+                        const x1 = p1x - p0x, y1 = p1y - p0y, z1 = p1z - p0z;
+                        const x2 = p2x - p0x, y2 = p2y - p0y, z2 = p2z - p0z;
+                        const s1 = uv1x - uv0x, t1 = uv1y - uv0y;
+                        const s2 = uv2x - uv0x, t2 = uv2y - uv0y;
+                        const denom = (s1 * t2 - s2 * t1);
+                        if (Math.abs(denom) < 1e-6) { continue; }
+                        const r = 1.0 / denom;
+                        const tx = (x1 * t2 - x2 * t1) * r;
+                        const ty = (y1 * t2 - y2 * t1) * r;
+                        const tz = (z1 * t2 - z2 * t1) * r;
+                        const bx = (x2 * s1 - x1 * s2) * r;
+                        const by = (y2 * s1 - y1 * s2) * r;
+                        const bz = (z2 * s1 - z1 * s2) * r;
+                        addVec3(tan, i0, tx, ty, tz); addVec3(tan, i1, tx, ty, tz); addVec3(tan, i2, tx, ty, tz);
+                        addVec3(bit, i0, bx, by, bz); addVec3(bit, i1, bx, by, bz); addVec3(bit, i2, bx, by, bz);
                     }
+                    const tangents: number[] = new Array(vcount * 4);
+                    for (let i = 0; i < vcount; i++) {
+                        const nx = nArr[i*3+0], ny = nArr[i*3+1], nz = nArr[i*3+2];
+                        const tx = tan[i*3+0], ty = tan[i*3+1], tz = tan[i*3+2];
+                        const bx = bit[i*3+0], by = bit[i*3+1], bz = bit[i*3+2];
+                        // Gram-Schmidt orthonormalize tangent against normal
+                        const ndott = nx*tx + ny*ty + nz*tz;
+                        let rx = tx - nx*ndott, ry = ty - ny*ndott, rz = tz - nz*ndott;
+                        const rlen = Math.hypot(rx, ry, rz) || 1.0;
+                        rx /= rlen; ry /= rlen; rz /= rlen;
+                        // Handedness
+                        const cx = ny*rz - nz*ry;
+                        const cy = nz*rx - nx*rz;
+                        const cz = nx*ry - ny*rx;
+                        const handed = (cx*bx + cy*by + cz*bz) < 0.0 ? -1.0 : 1.0;
+                        tangents[i*4+0] = rx; tangents[i*4+1] = ry; tangents[i*4+2] = rz; tangents[i*4+3] = handed;
+                    }
+                    const glAttribute = new AbstractV4Attribute(undefined, "TANGENT");
                     glAttribute.PushArray(tangents);
                     glAttribute.RebuildBuffer();
                     attributes['TANGENT'] = glAttribute;
