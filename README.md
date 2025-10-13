@@ -1,145 +1,162 @@
-# LR Lucid3D — WebGPU/WebXR Rendering Library (WIP)
+# LR Lucid3D — WebGPU Rendering Sandbox
 
-An in‑progress WebGPU/WebXR rendering library incubated at LuciformResearch. This repository hosts experiments around a small rendering core (camera/controls, GLTF loading + skinning, PBR material experiments) with basic samples (textured cube, glTF Fox) to validate the pipeline.
+This repository hosts the LuciformResearch WebGPU playground. It implements:
 
-Project status: early stage, APIs and structure will change frequently.
+- **Forward & deferred PBR pipelines** (skinned glTF support, G-buffer packing, debug overlays)
+- A **modular shader system** (TypeScript shader modules → generated WGSL) used by the new abstractions path
+- Live **lighting / diagnostic controls** (directional light, IBL blend, matcap mix, debug views)
+- A stocked asset library (HDR skies and matcap textures) to experiment with lighting setups
 
-## Requirements
-- Node.js 16+ (recommended: 18+)
-- A browser with WebGPU: recent Chrome/Edge (Chrome ≥ 113) or enable the `chrome://flags/#enable-unsafe-webgpu` flag
-- Secure context: `https://` or `http://localhost` (considered secure). Dev server runs with a self‑signed certificate.
+> Current focus: iterate on the abstraction layer (shader modules + material factory) so forward and deferred paths share the same building blocks.
 
-## Getting started
+---
+
+## Quick Start
+
 ```bash
+# install deps
 npm install
-npm start        # dev server (watch + BrowserSync)
-# then open https://localhost:4400
-```
 
-Notes
-- The bundle is emitted to `build/index.js` and referenced from `index.html`.
-- For the self‑signed certificate, accept the exception in your browser if prompted.
+# dev server (https, auto reload)
+npm start
+# opens https://localhost:4400 – accept the self-signed cert
 
-## Production build
-```bash
+# production bundle
 npm run build
+# emits build/index.js (referenced by index.html)
 ```
-Outputs a minified bundle in `build/`.
 
-To serve without BrowserSync for a quick check:
+To serve the production bundle quickly:
+
 ```bash
 python3 -m http.server 8000
-# then open http://localhost:8000
+# then http://localhost:8000
 ```
 
-## Project layout
-- `src/lucid3d/`: Lucid3D core library (renderer, materials/shaders, GLTF loader, animation/skinning, math)
-- `src/components/WebgpuApp/`: app bootstrap and utilities (debug overlay, query flags, WebXR button)
-- `src/lucid3d/WebgpuSamples/`: small samples (textured cube, glTF Fox) used by the demo app
-- `src/index.ts`: entry point that initializes the WebGPU scene
-- `assets/`: models, textures and resources
-- `webpack.config.js`: Webpack 5 config (dev: BrowserSync, prod: minification)
+Requirements
+- Node.js ≥ 18 recommended (16+ works)
+- WebGPU capable browser (Chrome ≥ 113 / Edge ≥ 113 or enable `chrome://flags/#enable-unsafe-webgpu`)
+- Secure context (https or `http://localhost`)
 
-TypeScript path aliases
-- `@lucid3d` points to `src/lucid3d/index.ts` (barrel exports)
-- `@lucid3d/*` resolves to files under `src/lucid3d/*`
+---
 
-Example import
-```ts
-import { WebgpuMain } from '@lucid3d';
-```
+## Running the Demos
 
-## Troubleshooting
-- `navigator.gpu` is undefined: use a WebGPU‑capable browser (Chrome 113+) or enable the flag; ensure a secure context (`https://` or `http://localhost`).
-- Blank screen: check DevTools console; verify `build/index.js` is served and no CORS errors occur on assets.
-- Untrusted certificate: accept the self‑signed cert, or serve via plain HTTP on `localhost`.
+All behaviour is controlled through URL query flags. Examples below assume the dev server.
 
-## Dual push (GitLab + GitHub)
-This repo includes `dual_push.sh` to push to both remotes:
+| Mode | URL |
+|------|-----|
+| Forward (default fox) | `https://localhost:4400/` |
+| Deferred dragon (2-RT octa packing) | `https://localhost:4400/?deferred=1&model=dragon&gbufTargets=2&oct=1` |
+| Deferred sponza baseline | `https://localhost:4400/?deferred=1&model=sponza` |
+| **Abstractions** dragon (new shader modules) | `https://localhost:4400/?absV2=1&model=dragon` |
+| Abstractions with IBL/matcap | `https://localhost:4400/?absV2=1&model=dragon&iblDiffuse=1&iblSpec=1&matcap=0404E8_0404B5_0404CB_3333FC.png` |
 
-Defaults
-- origin: `git@gitlab.com:luciformresearch/lr_lucid3d.git`
-- github: `https://github.com/LuciformResearch/LR_Lucid3D.git`
+Common flags
 
-Usage
+- `model=fox|dragon|sponza` or `modelurl=assets/.../scene.gltf`
+- `metrics=1` → overlay resource counters
+- `noanim=1` → freezes animations/skinning uploads
+- Forward/abstractions: `albedo=1` to force albedo-only output
+- Deferred: `gbufTargets=2|3`, `oct=1`, `gbuf=G0|G1|G2` (visualise G-buffer)
+- Camera presets: `camx/camy/camz`, `yaw`, `pitch`, `speed`
+- Lighting experiments (abstractions only):
+  - `iblDiffuse`, `iblSpec`, `iblEnable`
+  - `clearcoat`, `ccrough`
+  - `matcap=<PNG in assets/textures/matcaps>` and `matcapFactor`
+
+Camera controls (fly mode)
+- Move: ZQSD / WASD
+- Vertical: Space / R / E = up, Ctrl / C = down
+- Mouse drag (button 1) = yaw/pitch, wheel = adjust speed
+
+---
+
+## Shader Modules – Why They Matter
+
+We author shader features as TypeScript classes (`src/lucid3d/Abstractions/Modules/*`):
+
+- Each module declares **defines**, **uniforms**, **bind-group reservations**, and **WGSL snippets** for named phases (`LIGHT_COMPUTE`, `FRAGMENT_FINALIZE`, etc.).
+- `ShaderComposer` injects the snippets into WGSL templates (`src/lucid3d/Abstractions/templates/*.wgsl`).
+- `MaterialFactory` collects modules based on the material description (textures present, extensions enabled) and produces the final shader code + pipeline key + bind groups.
+
+Benefits
+- **Reusability**: the same normal/metallic module can be consumed by forward and, later, deferred encoders.
+- **Extensibility**: toggling clear coat, matcap, or future extensions (sheen/transmission) is just “push module if data present”.
+- **Testing**: each feature is isolated (easy to unit-test uniform registration or snippet generation).
+
+Entry points
+- `MaterialFactory.ts` – orchestrates modules, uniforms, pipeline caching
+- Modules: `BaseColorModule`, `MetallicRoughnessModule`, `NormalMapModule`, `IBLModule`, `ClearCoatModule`, `MatcapModule`, `PBRLightingModule`, …
+- Templates: `pbr_modules_forward.vert.wgsl`, `pbr_modules_forward.frag.wgsl`
+
+---
+
+## Assets
+
+- HDR skies: `assets/textures/ibl/<id>/` (equirectangular `.hdr` + preview JPEG) – currently loaded as neutral placeholders; todo: convert to cubemaps & prefiltered mip chains.
+- Matcaps: `assets/textures/matcaps/*.png` (1024²) – instantly usable with the Matcap module.
+- Models: Fox (glTF, skinned + anims), Stanford dragon, Sponza.
+
+> Note: HDR files are ~80–98 MB each; GitHub recommends migrating to Git LFS in the future.
+
+---
+
+## Debug Tools
+
+### Overlay (all modes)
+Shows FPS, texture availability, optional metrics (`metrics=1`). Updated every 0.25 s.
+
+### PBR Debug Panel (absV2)
+Auto-appears in abstraction mode. Controls:
+
+- Directional light on/off, intensity, color, direction sliders
+- IBL enable, diffuse & specular weights
+- Matcap enable, blend factor (visible only if matcap module active)
+- Diagnostic views (normals, MR, AO, emissive, base color)
+
+Implementation: `src/lucid3d/WebgpuSamples/pbr_debug_panel.ts`.
+
+---
+
+## Testing & Validation
+
+Automated tests are minimal; recommended manual checks:
+
+1. **Build passes** – `npm run build`
+2. **Forward overview** – `https://localhost:4400/?model=fox`
+3. **Deferred G-buffer** – `https://localhost:4400/?deferred=1&model=dragon&gbufTargets=2&oct=1`
+4. **Abstractions** – `https://localhost:4400/?absV2=1&model=dragon&iblDiffuse=1&iblSpec=1&matcap=0404E8_0404B5_0404CB_3333FC.png`
+   - Verify sliders update lighting; try toggling matcap/IBL/off
+5. **Skinning** – `https://localhost:4400/?model=fox` (forward) and `?absV2=1&model=fox` (abstractions) to confirm anim playback
+
+When tweaking shaders, keep DevTools console open: WebGPU validation errors surface there (e.g. missing bindings, incompatible usages).
+
+---
+
+## Repository Utilities
+
+`dual_push.sh` pushes to GitLab + GitHub. Example:
+
 ```bash
-./dual_push.sh --message "Initial commit"
-# optional: --branch my-branch
+./dual_push.sh --message \"Describe your change\"
 ```
 
-The script will add remotes if missing, commit (when there are local changes and a message is provided), and push to both remotes with tags.
+It ensures both remotes exist, commits staged/dirty changes, and pushes with tags.
 
-## Demo flags and controls
+---
 
-Append query parameters to the demo URL to switch modes or tweak behavior.
+## Roadmap / TODO
 
-Rendering
-- `deferred=1`: use the deferred renderer (omit for forward).
-- `gbufTargets=2|3`: number of G-Buffer color targets (default 3).
-  - 2 RTs: G0=albedo+metallic, G1=normal (octa in RG) + roughness (B), A=1.
-  - 3 RTs: G0=albedo+metallic, G1=normal+roughness, G2=emissive+ao.
-- `oct=1`: enable octa normal encode/decode with `gbufTargets=2`.
-- `albedo=1`: lighting debug, show albedo only.
-- `gbuf=G0|G1|G2`: debug viewer for a single G-Buffer target (G2 shows black in 2-RT mode).
+- HDR ingestion: convert `.hdr` equirectangular maps into cubemaps + prefiltered mip levels (specular) and generate a BRDF LUT
+- Extend shader modules: sheen / transmission / clearcoat normals / subsurface
+- Unify deferred path with shader modules (encode G-buffer via the same material description)
+- Fix deferred multi-light regression (`?lights>0`)
+- Tone mapping & exposure controls for HDR output
+- Investigate Git LFS or compressed asset pipeline for large textures
 
-Models
-- `model=fox|sponza|dragon` (default `fox`).
-- `modelurl=...`: load a custom glTF path (e.g. `assets/stanford_dragon_pbr/scene.gltf`).
-
-Animations / metrics
-- `noanim=1`: disable animation updates (skinning uploads suppressed after first buffer creation).
-- `metrics=1`: show aggregated WebGPU metrics in the overlay every 0.25s (buffers/bindGroups/textureViews/writes/bytes).
-
-Camera presets
-- `camx`, `camy`, `camz`: initial camera position.
-- `yaw`, `pitch`: initial orientation (radians).
-- `speed`: initial fly speed.
-
-Fly camera controls
-- Move: ZQSD (AZERTY) or WASD (QWERTY)
-- Vertical: Up = R/E/Space, Down = Ctrl/C
-- Mouse: hold left button to yaw/pitch
-- Wheel: adjust speed
-- Per-model defaults (if no `cam*`):
-  - Fox: (0, 0.8, 4)
-  - Dragon: (0, 0.8, 2.5)
-  - Sponza: (0, 2.5, 8)
-
-Examples
-- Forward Fox: `https://localhost:4400/?model=fox`
-- Deferred Dragon (reduced G-Buffer cost): `https://localhost:4400/?deferred=1&model=dragon&gbufTargets=2&oct=1&metrics=1`
-- Deferred Sponza baseline: `https://localhost:4400/?deferred=1&model=sponza&metrics=1`
-
-## Abstractions (Experimental)
-
-A forward PBR “abstractions” path is available to validate the new shader chunk/defines/material factory layer on glTF scenes.
-
-- Flags
-  - `absDemo=1`: run the abstractions demo (uses the existing glTF loader and builds per‑primitive materials and VBOs).
-  - `albedo=1`: in abstractions mode, forces albedo‑only output to quickly validate texture flow.
-  - `model=fox|dragon|sponza` (or `modelurl=...`) applies as usual.
-
-- Features
-  - Forward PBR stub with WGSL shader chunks/defines.
-  - Skinning supported (Fox anims update in `absDemo` like the normal paths).
-  - Single interleaved VBO layout: POSITION(3), NORMAL(3), UV0(2), JOINTS_0(4), WEIGHTS_0(4).
-
-- Examples
-  - Dragon: `https://localhost:4400/?absDemo=1&model=dragon`
-  - Albedo‑only check: `https://localhost:4400/?absDemo=1&model=dragon&albedo=1`
-  - Fox (skinning): `https://localhost:4400/?absDemo=1&model=fox`
-
-- Notes / Known issues
-  - In deferred + `?lights>0`, a bug currently in the multi‑light pass can invert/gray the model (investigating). Use deferred without `lights` meanwhile.
-  - Abstractions are evolving; a deferred abstraction (encode G‑Buffer from MaterialDesc) is planned to unify forward/deferred.
-
-## Notes on current state
-
-- Deferred supports 2-RT mode with octa normal packing to reduce bandwidth (`gbufTargets=2&oct=1`).
-- Skin storage buffer binding honors `minBindingSize=80` (dummy buffer when no skin).
-- Forward big-vertex-buffer is recreated safely on geometry changes (no in-use destroy).
-- The overlay (forward + deferred) shows FPS, textures present, and optional metrics.
+---
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See the `LICENSE` file for details.
+Apache 2.0 — see `LICENSE`.
