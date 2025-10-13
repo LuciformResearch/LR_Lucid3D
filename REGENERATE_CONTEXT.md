@@ -1,139 +1,87 @@
-# Regenerate Context — Current State, Flags, and Next Steps (Oct 2025)
+# Regenerate Context — WebGPU Renderer Status (Oct 2025)
 
-This document summarizes the renderer state (forward + deferred), runtime flags, debug tools, key file locations, and planned work. It provides enough context to resume quickly in a future session.
+This file is the quick start for the next Codex session. It summarizes the active branch, build/run steps, feature flags, key modules, and the roadmap items that remain unfinished.
 
-## Build/Run
-- Dev: `npm start` then open `https://localhost:4400`
-- Prod: `npm run build` then serve `index.html` via a static server
+## Workspace & Branch
+- Repo: `~/lr_webgpu_rendering_library`
+- Active branch: `abstractionsv2`
+- Historical WebGL code (reference for abstractions/BRDF): `~/Téléchargements/webxrelectronmodelingtool-main`
 
-## Runtime Flags (URL Query)
-- `deferred=1` — enable deferred renderer (else forward).
-- `gbufTargets=2|3` — G-Buffer color targets (default 3). 2-RT mode reduces bandwidth:
-  - 2 RTs: G0=albedo+metallic, G1=normal(octa RG)+roughness(B), A=1.
-  - 3 RTs: G0=albedo+metallic, G1=normal+roughness, G2=emissive+ao.
-- `oct=1` — enable octa normal encode/decode when `gbufTargets=2`.
-- `albedo=1` — debug: force lighting to albedo-only.
-- `gbuf=G0|G1|G2` — debug viewer for a G-Buffer target (G2 shows black in 2-RT mode).
-- `metrics=1` — overlay metrics snapshot every 0.25s: `buffersCreated`, `bindGroupsCreated`, `textureViewsCreated`, `writes`, `bytes`.
-- `noanim=1` — disable animation updates (skinning upload suppressed after buffer creation).
-- Model selection:
-  - `model=fox|sponza|dragon` (default fox)
-  - `modelurl=...` — override path for a custom glTF (e.g., `assets/stanford_dragon_pbr/scene.gltf`).
-- Camera:
-  - `camx`, `camy`, `camz` — initial camera position
-  - `yaw`, `pitch` — initial orientation (radians)
-  - `speed` — fly speed
+## Build & Run
+- Install deps once: `npm install`
+- Development server: `npm start` → open `https://localhost:4400`
+- Production bundle: `npm run build`, then serve `index.html`
 
-- Abstractions (forward PBR demo)
-  - `absDemo=1` — exécute la démo PBR basée sur les abstractions (glTF + factory de matériaux)
-  - `albedo=1` — en mode abstractions force l’affichage albedo‑only (utile pour débugger des scènes sombres)
+## Runtime Flags (URL query)
+- `model=fox|dragon|sponza` (default fox) or `modelurl=<path>`
+- `absV2=1` → run the new abstraction-based forward PBR renderer (auto-enables debug panel)
+- `deferred=1` → classic deferred renderer (3-RT or 2-RT pack)
+- `gbufTargets=2|3`, `oct=1` → control G-Buffer packing
+- `lights=<n>` → multi-light deferred test (still buggy)
+- `albedo=1` → show albedo-only output (works in abstractions too)
+- `metrics=1`, `noanim=1`, `camx/camy/camz`, `yaw/pitch` etc.
+- New IBL/matcap params (abstractions only):
+  - `iblDiffuse`, `iblSpec`, `iblEnable`
+  - `clearcoat`, `ccrough`
+  - `matcap=<filename>` (from `assets/textures/matcaps/`), `matcapFactor`
 
-## Camera Controls
-- Move: ZQSD (AZERTY) or WASD (QWERTY)
-- Vertical: Up = R/E/Space, Down = Ctrl/C
-- Mouse: hold left button to yaw/pitch
-- Wheel: adjust speed
-- Per-model defaults (if no `cam*`): Fox (0,0.8,4), Dragon (0,0.8,2.5), Sponza (0,2.5,8)
+## Debug Panel (absV2)
+- Top-right overlay provides live sliders for:
+  - Directional light enable/intensity/color
+  - IBL diffuse/spec intensity + enable toggle
+  - Matcap blend (if matcap extension present)
+  - Diagnostic outputs (normals, metallic/roughness, AO, emissive, base color)
+- Panel data is backed by `src/lucid3d/WebgpuSamples/pbr_debug_panel.ts`.
 
-## Debug Overlay
-- Shows FPS, animation info, texture flags, and (if `metrics=1`) the metrics snapshot.
-- Works in both forward and deferred.
+## Assets
+- HDR environments extracted to `assets/textures/ibl/<zip-name>/*.hdr`
+- Matcaps (1024×1024 PNG) at `assets/textures/matcaps/`
+- Current loader uses a placeholder cube & LUT (see TODO)
 
-## Deferred Pipeline
-- Geometry pass writes G-Buffer (2 or 3 RTs). 2-RT mode packs normal via octa (RG) + roughness (B) to reduce fill/bandwidth.
-- Lighting pass is a full-screen triangle; samples G-Buffer via `textureSampleLevel`.
-- Debug viewer (`gbuf=...`) uses `textureLoad` and clamps UVs.
-- Skin storage buffer minBindingSize=80 enforced when no skin (16 header + identity mat4): avoids validation errors.
-- Normal encoding/decoding (3-RT): normals sont encodées en [0,1] dans le G-Buffer (G1.xyz) et décodées (2*val-1) en lighting. En 2‑RT octa, on lit/écrit toujours via encode/décode octa.
+## Key Source Files
+- Core renderer loop: `src/lucid3d/WebgpuMain.ts`
+- Camera controls: `src/lucid3d/WebgpuOrbitControls.ts`
+- GLTF loader: `src/lucid3d/Loaders/GLTF2WGPU2.ts`
+- Deferred pipeline: `src/lucid3d/Deferred/`
+- Abstractions system:
+  - Shader modules: `src/lucid3d/Abstractions/Modules/`
+  - WGSL templates: `src/lucid3d/Abstractions/templates/`
+  - Material factory: `src/lucid3d/Abstractions/MaterialFactory.ts`
+  - Utility loader: `src/lucid3d/util/texture-loader.ts`
+- Demos: `src/lucid3d/WebgpuSamples/abstractions_forward_pbr_demo.ts`, `abstractions_gltf_demo.ts`
 
-## Forward Pipeline
-- Interleaved big-vertex-buffer assembled when attributes change (single write). Recreated safely when stride/vertex-count change (no immediate destroy) to avoid “used while destroyed”.
-- Skin dummy binding used when no skin.
+## Current Feature Snapshot
+- **IBL Module** combines irradiance/specular cube maps + BRDF LUT via `IBLModule.ts`. Currently uses fallback neutral cube; real HDR import still TODO.
+- **Clear Coat** uniform/define integrated; directional light path adds coat lobes.
+- **Matcap Module** blends a matcap texture based on view-space reflection (needs view matrix uniform; implemented).
+- **PBR Debug Panel** manipulates directional, IBL, matcap weights and diagnostic views live.
+- **Forward demo** loads a default matcap texture via `loadTexture2D` and registers it with the panel.
 
-## Performance & Caching (implemented)
-- Cached scene traversal and one-time `SetLocations` per geometry.
-- MVP: compute `proj*view` once per frame; per-mesh only multiply the model.
-- Deferred G-Buffer material packs MVP/Model/Normal/flags into a single 224-byte uniform write per draw.
-- Lighting debug/normal variants only recreate bind groups as needed; swapchain view created once per frame in lighting.
-- Metrics overlay to track resource churn and upload volume (anti‑flood).
+## Known Issues & TODO (carry forward)
+1. **HDR asset ingestion**
+   - Convert `assets/textures/ibl/*/*.hdr` into usable GPU textures (need HDR parser → cube conversion or sampling from equirectangular). Currently using neutral placeholder.
+   - Evaluate storing prefiltered specular mip chain (KTX2 or baked cubemaps).
+2. **Matcap improvements**
+   - Optionally flip UV for handedness, allow selecting different matcaps via GUI.
+   - Panel currently assumes presence if uniform exists; extend to dropdown of filenames.
+3. **Deferred multi-light regression**
+   - `?lights>0` still produces grey/inverted shading; revisit world reconstruction & normal decoding in lighting pass.
+4. **Tone mapping / exposure**
+   - With real HDRI the output will need tonemapping or exposure slider; consider ACES/filmic pass.
+5. **Skinned mesh in abstractions**
+   - Fox still needs abstraction shaders to consume skin matrices properly (currently handled in non-abs path only).
+6. **IBL BRDF LUT**
+   - Replace placeholder 1×1 texture with actual 2D LUT (prefiltered GGX). Prepare loader similar to matcap but for LUT PNG.
+7. **Codebase convergence**
+   - Long-term plan: unify forward/deferred shading via abstractions modules. Need deferred variant of MaterialFactory using same snippet system.
+8. **Profiling**
+   - Sponza remains fill-rate heavy; consider half-resolution G-buffer or culling improvements.
 
-## Current Status
-- Dragon + Sponza load in both forward and deferred (camera presets added to stay above ground).
-- 2‑RT octa path working; visuals a bit darker vs 3‑RT (expected — will tune post‑validation).
-- Forward stabilized (buffer size alignment, VBO resize safety); overlay parity with deferred.
-- Observed: Sponza deferred can be 1–2 FPS (likely fill‑rate/bandwidth bound). Use `gbufTargets=2&oct=1` to reduce G‑Buffer cost for profiling.
+## Quick How-To for Next Session
+1. Load the abstraction demo for the dragon: `https://localhost:4400/?absV2=1&model=dragon&iblDiffuse=1&iblSpec=1&matcap=0404E8_0404B5_0404CB_3333FC.png`
+2. Check directional/IBL/matcap sliders update shading live (ensures uniforms and panel wiring still OK).
+3. Inspect `assets/textures/ibl/` for HDR skies to convert; plan shader or offline tool to produce cubemaps (reference WebGL project for BRDF & IBL functions).
+4. For matcap module reference, review legacy GLSL in `webxrelectronmodelingtool` under `GltfViewerSample/source/shaders/fullFragment.glsl` (clearcoat, sheen, etc.).
+5. When ready to work on deferred lights, focus on `DeferredRenderer.lightingPass` and the multi-light branch.
 
-## Abstractions Mode (Experimental)
-- Toggle: `absDemo=1` exécute une démo PBR forward basée sur les nouvelles abstractions (chunks WGSL/defines/factory de matériaux).
-- GLTF: réutilise le loader existant; construit un VBO interleavé par primitive (POSITION(3), NORMAL(3), UV0(2), JOINTS_0(4), WEIGHTS_0(4)) et un matériau PBR forward à partir des textures (albedo/MR/normal/AO/emissive si présentes).
-- Skinning: supporté (buffer storage avec header useSkinning + paires de matrices skin/normal par joint). Les animations glTF s’updatent aussi en absDemo.
-- Flags: `albedo=1` force albedo‑only dans abstractions pour vérification rapide du flux textures.
-
-## Known Issues (Oct 2025)
-- Deferred + Multi‑Lights: avec `?lights>0` le modèle peut apparaître inversé/gris. Piste: reconstruction world/depth/normal et handedness dans la passe lights. Workaround: désactiver `lights`.
-- Performance: Sponza deferred bound par fill/bandwidth. Préférer `gbufTargets=2&oct=1` pour profiler.
-
-## Abstractions Mode (Experimental)
-- Toggle: `absDemo=1` runs a forward PBR demo built from new abstractions (shader chunks/defines/material factory).
-- GLTF: Uses the existing loader; builds per‑primitive VBO (pos3+norm3+uv2) and a forward PBR material from textures (albedo/MR/normal/AO/emissive when present).
-- Flags: `albedo=1` now also forces albedo‑only in abstractions (helps debug very dark scenes / texture correctness).
-- Known: Fox (skinned) currently black in abstractions (skinning not yet implemented in the abstraction shaders). Dragon renders but can be dark — use `albedo=1` to verify data flow. Skinning support planned next.
-
-## Known Issues (Oct 2025)
-- Deferred + Multi‑Lights: when `?lights > 0`, model can appear inverted and grey on black. Root cause under investigation (depth/normal reconstruction or coordinate mismatch in the multi‑light path). Workaround: disable lights or use standard deferred without `lights` until fixed.
-- Abstractions Fox: black screen (skinned mesh not handled yet). Abstractions Dragon: renders but dark; use `albedo=1` to validate albedo flow.
-
-## Next Steps (Showcase Many Point Lights)
-1) Multi‑light support in deferred
-   - Add `?lights=N` and allocate a storage buffer of N point lights.
-   - Optional compute pass to update light positions/colors (like webgpu‑samples), else CPU init + per‑frame jitter.
-   - Accumulate lighting in fragment shader for baseline demo (clustered/tiled later if needed).
-
-2) G‑Buffer tuning
-   - Recommend `gbufTargets=2` when AO/Emissive unused. Keep `gbufTargets` configurable.
-   - If needed, add half‑res G1/G2 + upsample path.
-
-3) UX
-   - Optional pointer‑lock for mouse look.
-   - Simple UI toggles for `gbufTargets`, `oct`, `noanim`, and model switching.
-
-## Key Files
-- Deferred: `src/lucid3d/Deferred/DeferredRenderer.ts`, `src/lucid3d/Deferred/WebgpuGBufferMaterial.ts`, `src/lucid3d/Deferred/WebgpuSceneRendererGBuffer.ts`, shaders in `src/lucid3d/Deferred/shaders/`.
-- Forward: `src/lucid3d/PBRMaterial/WebgpuMaterial.ts`, shaders under `src/lucid3d/PBRMaterial/shaders/`, `src/lucid3d/WebgpuSceneRenderer.ts`.
-- Common: camera `src/lucid3d/WebgpuOrbitControls.ts`, main loop `src/lucid3d/WebgpuMain.ts`, geometry `src/lucid3d/WebgpuGeom.ts`, GLTF loader `src/lucid3d/Loaders/GLTF2WGPU2.ts`, overlay `src/components/WebgpuApp/util/debug-overlay.ts`, query args `src/components/WebgpuApp/util/query-args.ts`, metrics `src/lucid3d/util/metrics.ts`.
-- Models: Fox (`assets/Fox/glTF/Fox.gltf`), Sponza (`assets/media/gltf/sponza/Sponza.gltf`), Dragon (`assets/stanford_dragon_pbr/scene.gltf`).
-
-### Abstractions (nouveaux fichiers)
-- `src/lucid3d/Abstractions/Defines.ts`, `ShaderChunk.ts`, `Uniforms.ts`, `PipelineCache.ts`
-- `src/lucid3d/Abstractions/templates/pbr_forward.{vert,frag}.wgsl`, `chunks/`
-- `src/lucid3d/Abstractions/MaterialFactory.ts` (Forward PBR stub avec skinning + albedo‑only)
-- Démos: `src/lucid3d/WebgpuSamples/abstractions_forward_pbr_demo.ts`, `src/lucid3d/WebgpuSamples/abstractions_gltf_demo.ts`
-
-## Quick Profiles
-
-## Next Steps (Abstractions Roadmap)
-1) Parité PBR complète en abstractions
-   - Ajout TBN + normal mapping dans la factory abstractions (forward) pour parité visuelle avec le deferred.
-   - Pooling: `BindGroupPool`, `Uniform ring buffer`, `PipelineCache` branchés sous la factory pour réduire le churn.
-
-2) Abstractions côté deferred
-   - Générer automatiquement une variante « encode G‑Buffer » depuis le même `MaterialDesc` (chunks `encode_gbuffer`, `octEncode`, etc.).
-   - Unifier layouts/attributs (POSITION/NORMAL/TANGENT/UVs/JOINTS/WEIGHTS) pour forward et deferred.
-   - Exposer un switch haut niveau « path: forward|deferred » au niveau factory.
-
-3) Multi‑lights deferred (fix + upgrade)
-   - Corriger la reconstruction world (clip/depth) et handedness pour `?lights>0`.
-   - Étudier tiled/clustered lighting (liste compacte de lights par cluster) pour scaler N lights.
-
-4) Outils & UI
-   - Étendre le panneau de flags (absDemo): toggles PBR (albedo‑only, normal map on/off, roughness/metallic scalars).
-   - Material inspector (visualiser defines/chunks; mini log de compilation).
-- Forward Fox: `?model=fox`
-- Deferred Dragon (reduced G‑Buffer cost): `?deferred=1&model=dragon&gbufTargets=2&oct=1&metrics=1`
-- Deferred Sponza baseline: `?deferred=1&model=sponza&metrics=1`
-- Isolate CPU uploads: add `&noanim=1`
-- Abstractions PBR Dragon: `?absDemo=1&model=dragon`
-- Abstractions PBR Fox (skinning): `?absDemo=1&model=fox`
-- Abstractions albedo‑only check: `?absDemo=1&model=dragon&albedo=1`
-- Abstractions PBR Dragon: `?absDemo=1&model=dragon`
-- Abstractions albedo‑only check: `?absDemo=1&model=dragon&albedo=1`
+Keep this document updated before ending a session (record new flags, major fixes, outstanding bugs).

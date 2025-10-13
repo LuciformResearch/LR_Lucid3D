@@ -7,6 +7,7 @@ export type TextureBinding = {
   view: GPUTextureView;
   uvSet?: 0 | 1;
   uvTransform?: TextureTransform;
+  mipLevels?: number;
 } | null;
 
 export type MaterialDesc = {
@@ -26,6 +27,23 @@ export type MaterialDesc = {
   features?: {
     vertexColor?: boolean;
     doubleSided?: boolean;
+  };
+  environment?: {
+    diffuse?: TextureBinding;
+    specular?: TextureBinding;
+    brdfLut?: TextureBinding;
+    diffuseIntensity?: number;
+    specularIntensity?: number;
+  };
+  extensions?: {
+    clearcoat?: {
+      factor?: number;
+      roughness?: number;
+    };
+    matcap?: {
+      texture?: TextureBinding;
+      factor?: number;
+    };
   };
 };
 

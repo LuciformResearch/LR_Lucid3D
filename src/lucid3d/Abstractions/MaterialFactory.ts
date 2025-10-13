@@ -15,6 +15,10 @@ import { AmbientOcclusionModule } from './Modules/AmbientOcclusionModule';
 import { EmissiveModule } from './Modules/EmissiveModule';
 import { makeAggregationContext } from './Modules/UniformRegistryImpl';
 import { PBRLightingModule } from './Modules/PBRLightingModule';
+import { IBLModule } from './Modules/IBLModule';
+import { ClearCoatModule } from './Modules/ClearCoatModule';
+import { MatcapModule } from './Modules/MatcapModule';
+import { ShaderModuleBase } from './Modules/ShaderModule';
 
 type MaterialTexture = NonNullable<MaterialDesc['textures']>[keyof NonNullable<MaterialDesc['textures']>];
 
@@ -38,6 +42,7 @@ export class ForwardPBRMaterial extends GeneratedForwardMaterial {
   }
   setProjView(m: Float32Array | number[]) { (this.uniforms.PROJVIEW as Matrix4Uniform).value = m as any; }
   setModel(m: Float32Array | number[]) { (this.uniforms.MODEL as Matrix4Uniform).value = m as any; }
+  setView(m: Float32Array | number[]) { (this.uniforms.VIEW as Matrix4Uniform).value = m as any; }
   setBaseColorFactor(v: [number, number, number, number]) { (this.uniforms.BASE_COLOR_FACTOR as Vector4Uniform).value = v; }
   setMetallicRoughness(v: [number, number]) { (this.uniforms.METAL_ROUGH as Vector2Uniform).value = v; }
   setOcclusionStrength(v: number) { (this.uniforms.OCCLUSION_STRENGTH as FloatUniform).value = v; }
@@ -45,6 +50,9 @@ export class ForwardPBRMaterial extends GeneratedForwardMaterial {
   setCameraPosition(v: [number, number, number]) { (this.uniforms.CAMERA_POS as Vector3Uniform).value = v; }
   setLightDirectionIntensity(v: [number, number, number, number]) { (this.uniforms.LIGHT_DIR_INT as Vector4Uniform).value = v; }
   setLightColor(v: [number, number, number, number]) { (this.uniforms.LIGHT_COLOR as Vector4Uniform).value = v; }
+  setIBLParams(diffuse: number, specular: number, maxMip: number) { (this.uniforms.IBL_PARAMS as Vector4Uniform).value = [diffuse, specular, maxMip, 0]; }
+  setClearCoat(factor: number, roughness: number) { (this.uniforms.CLEARCOAT as Vector2Uniform).value = [factor, roughness]; }
+  setMatcapFactor(v: number) { (this.uniforms.MATCAP_FACTOR as FloatUniform).value = v; }
   setDebugMode(mode: number) { (this.uniforms.DEBUG_PARAMS as Vector4Uniform).value = [mode, 0, 0, 0]; }
   updateUniforms() { this.ubo.update(); }
 }
@@ -63,7 +71,16 @@ export class MaterialFactory {
     const occlusionStrength = 1.0;
     const emissiveFactor: [number, number, number] = [1, 1, 1];
 
-    const modules = [
+    const environment = desc.environment;
+    const iblDiffuseIntensity = environment?.diffuseIntensity ?? 0;
+    const iblSpecularIntensity = environment?.specularIntensity ?? 0;
+    const specularMaxMip = Math.max((environment?.specular?.mipLevels ?? 1) - 1, 0);
+    const clearcoatFactor = desc.extensions?.clearcoat?.factor ?? 0;
+    const clearcoatRoughness = desc.extensions?.clearcoat?.roughness ?? 0.25;
+    const matcapExt = desc.extensions?.matcap;
+    const matcapFactor = matcapExt?.factor ?? 0;
+
+    const modules: ShaderModuleBase[] = [
       new ForwardCoreModule({ enableSkinning: true }),
       new BaseColorModule({ enabled: !!baseColorTex, uvSet: baseColorTex?.uvSet ?? 0 }),
       new MetallicRoughnessModule({
@@ -75,11 +92,24 @@ export class MaterialFactory {
       new NormalMapModule({ enabled: !!normalTex, uvSet: normalTex?.uvSet ?? 0 }),
       new AmbientOcclusionModule({ enabled: !!aoTex, strength: occlusionStrength, uvSet: aoTex?.uvSet ?? 0 }),
       new EmissiveModule({ enabled: !!emissiveTex, factor: emissiveFactor, uvSet: emissiveTex?.uvSet ?? 0 }),
-      new PBRLightingModule(),
     ];
+
+    if (environment) {
+      modules.push(new IBLModule({ diffuseIntensity: iblDiffuseIntensity, specularIntensity: iblSpecularIntensity, maxMipLevel: specularMaxMip }));
+    }
+    if (clearcoatFactor > 0.0) {
+      modules.push(new ClearCoatModule({ factor: clearcoatFactor, roughness: clearcoatRoughness }));
+    }
+    if (matcapExt) {
+      modules.push(new MatcapModule({ factor: matcapFactor }));
+    }
+    modules.push(new PBRLightingModule());
 
     const ctx = makeAggregationContext(modules);
     ctx.defines.set('ALBEDO_ONLY', QueryArgs.getBool('albedo', false));
+    if (!ctx.defines.has('HAS_CLEARCOAT')) ctx.defines.set('HAS_CLEARCOAT', false);
+    if (!ctx.defines.has('HAS_IBL')) ctx.defines.set('HAS_IBL', false);
+    if (!ctx.defines.has('HAS_MATCAP')) ctx.defines.set('HAS_MATCAP', false);
 
     const defines = new Defines();
     for (const [key, value] of ctx.defines.entries()) {
@@ -108,6 +138,10 @@ export class MaterialFactory {
     if (aoUniform) aoUniform.value = occlusionStrength;
     const emissiveUniform = uniforms.EMISSIVE_FACTOR as Vector3Uniform | undefined;
     if (emissiveUniform) emissiveUniform.value = emissiveFactor;
+    const clearcoatUniform = uniforms.CLEARCOAT as Vector2Uniform | undefined;
+    if (clearcoatUniform) clearcoatUniform.value = [clearcoatFactor, clearcoatRoughness];
+    const matcapUniform = uniforms.MATCAP_FACTOR as FloatUniform | undefined;
+    if (matcapUniform) matcapUniform.value = matcapFactor;
     const lightDirUniform = uniforms.LIGHT_DIR_INT as Vector4Uniform | undefined;
     if (lightDirUniform) {
       let dir = [0.3, 0.8, 0.5];
@@ -123,6 +157,13 @@ export class MaterialFactory {
     if (debugUniform) debugUniform.value = [0, 0, 0, 0];
     const cameraUniform = uniforms.CAMERA_POS as Vector3Uniform | undefined;
     if (cameraUniform) cameraUniform.value = [0, 0, 0];
+    const iblUniform = uniforms.IBL_PARAMS as Vector4Uniform | undefined;
+    if (iblUniform) {
+      if (environment) iblUniform.value = [iblDiffuseIntensity, iblSpecularIntensity, specularMaxMip, 0];
+      else iblUniform.value = [0, 0, 0, 0];
+    }
+    const viewUniform = uniforms.VIEW as Matrix4Uniform | undefined;
+    if (viewUniform) viewUniform.value = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
     const applyUV = (tex: MaterialTexture | null, so: string, rs: string) => {
       if (!tex) return;
       const uSO = uniforms[so] as Vector4Uniform | undefined;
@@ -192,6 +233,10 @@ export class MaterialFactory {
     const defaultNormal = DefaultTextures.flatNormalView(device);
     const defaultAO = DefaultTextures.whiteView(device);
     const defaultEmissive = DefaultTextures.blackView(device);
+    const defaultMatcap = DefaultTextures.whiteView(device);
+    const envDiffuseView = environment?.diffuse?.view ?? DefaultTextures.neutralEnvironmentCube(device);
+    const envSpecularView = environment?.specular?.view ?? DefaultTextures.neutralEnvironmentCube(device);
+    const envBrdfView = environment?.brdfLut?.view ?? DefaultTextures.brdfLutView(device);
     for (const binding of ctx.bindingDefinitions()) {
       if (binding.kind === 'sampler') {
         texEntries.push({ binding: binding.binding, resource: sampler });
@@ -205,6 +250,10 @@ export class MaterialFactory {
           case 'tNormal': view = normalTex?.view ?? defaultNormal; break;
           case 'tAO': view = aoTex?.view ?? defaultAO; break;
           case 'tEmissive': view = emissiveTex?.view ?? defaultEmissive; break;
+          case 'tMatcap': view = matcapExt?.texture?.view ?? defaultMatcap; break;
+          case 'tIrradiance': view = envDiffuseView; break;
+          case 'tRadiance': view = envSpecularView; break;
+          case 'tBRDF': view = envBrdfView; break;
           default: view = defaultBase;
         }
         if (!view) view = defaultBase;
@@ -214,6 +263,10 @@ export class MaterialFactory {
     const bg1 = BGPool.getOrCreate(device, bgl1, texEntries);
     const mat = new ForwardPBRMaterial(device, pipeline, bg0, bg1, uniforms, pack, uboGPU);
     (mat as any).bglSkin = bgl2;
+    mat.setClearCoat(clearcoatFactor, clearcoatRoughness);
+    mat.setMatcapFactor(matcapFactor);
+    if (environment) mat.setIBLParams(iblDiffuseIntensity, iblSpecularIntensity, specularMaxMip);
+    else mat.setIBLParams(0, 0, 0);
     return mat;
   }
 

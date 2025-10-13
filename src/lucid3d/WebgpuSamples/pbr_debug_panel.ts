@@ -19,8 +19,14 @@ type DebugModeOption = {
 
 type PanelState = {
   lightDir: [number, number, number];
-  intensity: number;
+  dirIntensity: number;
   lightColor: [number, number, number];
+  dirEnabled: boolean;
+  iblDiffuse: number;
+  iblSpecular: number;
+  iblEnabled: boolean;
+  matcapFactor: number;
+  matcapEnabled: boolean;
   debugMode: number;
 };
 
@@ -35,16 +41,31 @@ export class PBRDebugPanel {
 
   private container: HTMLDivElement;
   private materials = new Set<ForwardPBRMaterial>();
+  private iblMaxMip = new WeakMap<ForwardPBRMaterial, number>();
+  private hasMatcap = false;
   private state: PanelState = {
     lightDir: [0.3, 0.8, 0.5],
-    intensity: 1.0,
+    dirIntensity: 1.0,
     lightColor: [1, 1, 1],
+    dirEnabled: true,
+    iblDiffuse: 1.0,
+    iblSpecular: 1.0,
+    iblEnabled: true,
+    matcapFactor: 1.0,
+    matcapEnabled: true,
     debugMode: 0,
   };
 
   private dirInputs: { x: HTMLInputElement; y: HTMLInputElement; z: HTMLInputElement; };
   private intensityInput: HTMLInputElement;
+  private dirToggle: HTMLInputElement;
   private colorInput: HTMLInputElement;
+  private iblDiffuseInput: HTMLInputElement;
+  private iblSpecInput: HTMLInputElement;
+  private iblToggle: HTMLInputElement;
+  private matcapToggle: HTMLInputElement | null = null;
+  private matcapInput: HTMLInputElement | null = null;
+  private matcapSection: HTMLDivElement | null = null;
   private debugChecks: HTMLInputElement[] = [];
   private debugOptions: DebugModeOption[] = [
     { label: 'Normals', mode: 1 },
@@ -61,11 +82,11 @@ export class PBRDebugPanel {
     this.container.style.position = 'fixed';
     this.container.style.top = '12px';
     this.container.style.right = '12px';
-    this.container.style.minWidth = '220px';
+    this.container.style.minWidth = '240px';
     this.container.style.padding = '12px';
-    this.container.style.background = 'rgba(14, 18, 27, 0.8)';
-    this.container.style.borderRadius = '8px';
-    this.container.style.boxShadow = '0 8px 18px rgba(0,0,0,0.45)';
+    this.container.style.background = 'rgba(14, 18, 27, 0.82)';
+    this.container.style.borderRadius = '10px';
+    this.container.style.boxShadow = '0 12px 24px rgba(0,0,0,0.45)';
     this.container.style.color = '#fff';
     this.container.style.fontFamily = 'Inter, system-ui, sans-serif';
     this.container.style.fontSize = '13px';
@@ -75,15 +96,33 @@ export class PBRDebugPanel {
     this.container.style.userSelect = 'none';
 
     const title = document.createElement('div');
-    title.textContent = 'PBR Debug';
+    title.textContent = 'PBR Controls';
     title.style.fontWeight = '600';
-    title.style.marginBottom = '8px';
+    title.style.marginBottom = '10px';
     this.container.appendChild(title);
 
     const lightSection = this.createSection('Directional light');
+    const dirToggleRow = document.createElement('label');
+    dirToggleRow.style.display = 'flex';
+    dirToggleRow.style.alignItems = 'center';
+    dirToggleRow.style.marginBottom = '6px';
+    this.dirToggle = document.createElement('input');
+    this.dirToggle.type = 'checkbox';
+    this.dirToggle.checked = this.state.dirEnabled;
+    this.dirToggle.style.marginRight = '8px';
+    this.dirToggle.addEventListener('change', () => {
+      this.state.dirEnabled = this.dirToggle.checked;
+      this.applyLighting();
+    });
+    const dirToggleLabel = document.createElement('span');
+    dirToggleLabel.textContent = 'Activer';
+    dirToggleRow.appendChild(this.dirToggle);
+    dirToggleRow.appendChild(dirToggleLabel);
+    lightSection.appendChild(dirToggleRow);
+
     const dirWrapper = document.createElement('div');
     dirWrapper.style.display = 'grid';
-    dirWrapper.style.gridTemplateColumns = '56px 1fr';
+    dirWrapper.style.gridTemplateColumns = '60px 1fr';
     dirWrapper.style.rowGap = '4px';
     dirWrapper.style.columnGap = '8px';
 
@@ -104,8 +143,8 @@ export class PBRDebugPanel {
     dirWrapper.appendChild(dirZ.label); dirWrapper.appendChild(dirZ.input);
     lightSection.appendChild(dirWrapper);
 
-    const intensitySlider = this.createSlider('intensity', 0, 5, 0.01, this.state.intensity, (value) => {
-      this.state.intensity = value;
+    const intensitySlider = this.createSlider('intensity', 0, 5, 0.01, this.state.dirIntensity, (value) => {
+      this.state.dirIntensity = value;
       this.applyLighting();
     });
     intensitySlider.input.style.marginTop = '6px';
@@ -140,8 +179,66 @@ export class PBRDebugPanel {
     this.intensityInput = intensitySlider.input;
     this.colorInput = colorInput;
 
+    const iblSection = this.createSection('Image Based Lighting');
+    const iblToggleRow = document.createElement('label');
+    iblToggleRow.style.display = 'flex';
+    iblToggleRow.style.alignItems = 'center';
+    iblToggleRow.style.marginBottom = '6px';
+    this.iblToggle = document.createElement('input');
+    this.iblToggle.type = 'checkbox';
+    this.iblToggle.checked = this.state.iblEnabled;
+    this.iblToggle.style.marginRight = '8px';
+    this.iblToggle.addEventListener('change', () => {
+      this.state.iblEnabled = this.iblToggle.checked;
+      this.applyIBL();
+    });
+    const iblToggleLabel = document.createElement('span');
+    iblToggleLabel.textContent = 'Activer';
+    iblToggleRow.appendChild(this.iblToggle);
+    iblToggleRow.appendChild(iblToggleLabel);
+    iblSection.appendChild(iblToggleRow);
+
+    const iblDiffuse = this.createSlider('diffuse', 0, 5, 0.01, this.state.iblDiffuse, (value) => {
+      this.state.iblDiffuse = value;
+      this.applyIBL();
+    });
+    iblSection.appendChild(iblDiffuse.wrapper);
+    const iblSpec = this.createSlider('specular', 0, 5, 0.01, this.state.iblSpecular, (value) => {
+      this.state.iblSpecular = value;
+      this.applyIBL();
+    });
+    iblSection.appendChild(iblSpec.wrapper);
+    this.iblDiffuseInput = iblDiffuse.input;
+    this.iblSpecInput = iblSpec.input;
+
+    this.matcapSection = this.createSection('Matcap');
+    this.matcapSection.style.display = 'none';
+    const matcapToggleRow = document.createElement('label');
+    matcapToggleRow.style.display = 'flex';
+    matcapToggleRow.style.alignItems = 'center';
+    matcapToggleRow.style.marginBottom = '6px';
+    this.matcapToggle = document.createElement('input');
+    this.matcapToggle.type = 'checkbox';
+    this.matcapToggle.checked = this.state.matcapEnabled;
+    this.matcapToggle.style.marginRight = '8px';
+    this.matcapToggle.addEventListener('change', () => {
+      this.state.matcapEnabled = this.matcapToggle!.checked;
+      this.applyMatcap();
+    });
+    const matcapToggleLabel = document.createElement('span');
+    matcapToggleLabel.textContent = 'Activer';
+    matcapToggleRow.appendChild(this.matcapToggle);
+    matcapToggleRow.appendChild(matcapToggleLabel);
+    this.matcapSection.appendChild(matcapToggleRow);
+
+    const matcapSlider = this.createSlider('blend', 0, 1, 0.01, this.state.matcapFactor, (value) => {
+      this.state.matcapFactor = value;
+      this.applyMatcap();
+    });
+    this.matcapSection.appendChild(matcapSlider.wrapper);
+    this.matcapInput = matcapSlider.input;
+
     const debugSection = this.createSection('Debug view');
-    debugSection.style.marginTop = '12px';
     const infoLine = document.createElement('div');
     infoLine.textContent = 'Afficher :';
     infoLine.style.marginBottom = '4px';
@@ -176,7 +273,7 @@ export class PBRDebugPanel {
 
     const resetBtn = document.createElement('button');
     resetBtn.textContent = 'Réinitialiser';
-    resetBtn.style.marginTop = '4px';
+    resetBtn.style.marginTop = '6px';
     resetBtn.style.width = '100%';
     resetBtn.style.padding = '6px 0';
     resetBtn.style.border = 'none';
@@ -184,22 +281,7 @@ export class PBRDebugPanel {
     resetBtn.style.cursor = 'pointer';
     resetBtn.style.background = 'rgba(255, 255, 255, 0.12)';
     resetBtn.style.color = '#fff';
-    resetBtn.addEventListener('click', () => {
-      this.state = {
-        lightDir: [0.3, 0.8, 0.5],
-        intensity: 1.0,
-        lightColor: [1, 1, 1],
-        debugMode: 0,
-      };
-      this.dirInputs.x.value = this.state.lightDir[0].toString();
-      this.dirInputs.y.value = this.state.lightDir[1].toString();
-      this.dirInputs.z.value = this.state.lightDir[2].toString();
-      this.intensityInput.value = this.state.intensity.toString();
-      this.colorInput.value = '#ffffff';
-      this.debugChecks.forEach((c) => { c.checked = false; });
-      this.applyLighting();
-      this.applyDebugMode();
-    });
+    resetBtn.addEventListener('click', () => this.reset());
     debugSection.appendChild(resetBtn);
 
     document.body.appendChild(this.container);
@@ -207,22 +289,80 @@ export class PBRDebugPanel {
 
   attachMaterials(materials: ForwardPBRMaterial[]) {
     let added = false;
+    let hasMatcap = this.hasMatcap;
     for (const mat of materials) {
       if (!this.materials.has(mat)) {
         this.materials.add(mat);
+        const uniform: any = mat.uniforms?.IBL_PARAMS;
+        const maxMip = Array.isArray(uniform?.value) ? uniform.value[2] : 0;
+        this.iblMaxMip.set(mat, maxMip);
         added = true;
+      }
+      const matcapUniform: any = mat.uniforms?.MATCAP_FACTOR;
+      if (matcapUniform !== undefined) {
+        hasMatcap = true;
+        if (!this.hasMatcap) {
+          const factor = typeof matcapUniform.value === 'number'
+            ? matcapUniform.value
+            : (Array.isArray(matcapUniform.value) ? matcapUniform.value[0] : 1);
+          this.state.matcapFactor = factor ?? 1;
+          this.state.matcapEnabled = (this.state.matcapFactor ?? 0) > 0.001;
+        }
+      }
+    }
+    this.hasMatcap = hasMatcap;
+    if (this.matcapSection) {
+      this.matcapSection.style.display = this.hasMatcap ? 'block' : 'none';
+      if (this.hasMatcap) {
+        if (this.matcapInput) this.matcapInput.value = this.state.matcapFactor.toString();
+        if (this.matcapToggle) this.matcapToggle.checked = this.state.matcapEnabled;
       }
     }
     if (this.materials.size > 0) {
       this.container.style.display = 'block';
       if (added) {
         this.applyLighting(materials);
+        this.applyIBL(materials);
+        this.applyMatcap(materials);
         this.applyDebugMode(materials);
       } else {
         this.applyLighting();
+        this.applyIBL();
+        this.applyMatcap();
         this.applyDebugMode();
       }
     }
+  }
+
+  private reset() {
+    this.state = {
+      lightDir: [0.3, 0.8, 0.5],
+      dirIntensity: 1.0,
+      lightColor: [1, 1, 1],
+      dirEnabled: true,
+      iblDiffuse: 1.0,
+      iblSpecular: 1.0,
+      iblEnabled: true,
+      matcapFactor: 1.0,
+      matcapEnabled: true,
+      debugMode: 0,
+    };
+    this.dirInputs.x.value = this.state.lightDir[0].toString();
+    this.dirInputs.y.value = this.state.lightDir[1].toString();
+    this.dirInputs.z.value = this.state.lightDir[2].toString();
+    this.intensityInput.value = this.state.dirIntensity.toString();
+    this.dirToggle.checked = true;
+    this.colorInput.value = '#ffffff';
+    this.iblDiffuseInput.value = this.state.iblDiffuse.toString();
+    this.iblSpecInput.value = this.state.iblSpecular.toString();
+    this.iblToggle.checked = true;
+    if (this.matcapInput) this.matcapInput.value = this.state.matcapFactor.toString();
+    if (this.matcapToggle) this.matcapToggle.checked = this.state.matcapEnabled;
+    this.debugChecks.forEach((c) => { c.checked = false; });
+    this.applyLighting();
+    this.applyIBL();
+    this.applyMatcap();
+    this.applyDebugMode();
   }
 
   private createSection(title: string): HTMLDivElement {
@@ -252,7 +392,7 @@ export class PBRDebugPanel {
 
     const label = document.createElement('span');
     label.textContent = labelText;
-    label.style.width = '56px';
+    label.style.width = '60px';
     label.style.display = 'inline-block';
 
     const input = document.createElement('input');
@@ -273,8 +413,9 @@ export class PBRDebugPanel {
 
   private applyLighting(targetMaterials?: ForwardPBRMaterial[]) {
     const dir = normalizeVec3(this.state.lightDir);
-    const lightVector: [number, number, number, number] = [dir[0], dir[1], dir[2], this.state.intensity];
-    const colorVector: [number, number, number, number] = [
+    const intensity = this.state.dirEnabled ? this.state.dirIntensity : 0;
+    const lightVec: [number, number, number, number] = [dir[0], dir[1], dir[2], intensity];
+    const colorVec: [number, number, number, number] = [
       this.state.lightColor[0],
       this.state.lightColor[1],
       this.state.lightColor[2],
@@ -282,9 +423,33 @@ export class PBRDebugPanel {
     ];
     const mats = targetMaterials ?? Array.from(this.materials);
     for (const mat of mats) {
-      mat.setLightDirectionIntensity(lightVector);
-      mat.setLightColor(colorVector);
+      mat.setLightDirectionIntensity(lightVec);
+      mat.setLightColor(colorVec);
     }
+    this.flush(mats);
+  }
+
+  private applyIBL(targetMaterials?: ForwardPBRMaterial[]) {
+    const diffuse = this.state.iblEnabled ? this.state.iblDiffuse : 0;
+    const spec = this.state.iblEnabled ? this.state.iblSpecular : 0;
+    const mats = targetMaterials ?? Array.from(this.materials);
+    for (const mat of mats) {
+      const maxMip = this.iblMaxMip.get(mat) ?? 0;
+      mat.setIBLParams(diffuse, spec, maxMip);
+    }
+    this.flush(mats);
+  }
+
+  private applyMatcap(targetMaterials?: ForwardPBRMaterial[]) {
+    if (!this.hasMatcap) return;
+    const factor = this.state.matcapEnabled ? this.state.matcapFactor : 0;
+    const mats = targetMaterials ?? Array.from(this.materials);
+    for (const mat of mats) {
+      if ((mat.uniforms as any)?.MATCAP_FACTOR !== undefined) {
+        mat.setMatcapFactor(factor);
+      }
+    }
+    this.flush(mats);
   }
 
   private applyDebugMode(targetMaterials?: ForwardPBRMaterial[]) {
@@ -292,5 +457,10 @@ export class PBRDebugPanel {
     for (const mat of mats) {
       mat.setDebugMode(this.state.debugMode);
     }
+    this.flush(mats);
+  }
+
+  private flush(materials: ForwardPBRMaterial[]) {
+    for (const mat of materials) mat.updateUniforms();
   }
 }

@@ -46,6 +46,15 @@ if (NdotL > 0.0) {
     let fSpec = BRDF_specularGGX(f0, vec3<f32>(1.0), alpha, 1.0, VdotH, NdotL, NdotV, NdotH);
     let lightRadiance = ubo.LIGHT_COLOR.xyz * ubo.LIGHT_DIR_INT.w;
     color += NdotL * lightRadiance * (fDiffuse + fSpec);
+    if (HAS_CLEARCOAT) {
+      let ccFactor = ubo.CLEARCOAT.x;
+      if (ccFactor > 0.0) {
+        let ccRough = clamp(ubo.CLEARCOAT.y, 0.045, 1.0);
+        let ccAlpha = ccRough * ccRough;
+        let ccSpec = BRDF_specularGGX(vec3<f32>(0.04), vec3<f32>(1.0), ccAlpha, 1.0, VdotH, NdotL, NdotV, NdotH);
+        color += ccFactor * NdotL * lightRadiance * ccSpec;
+      }
+    }
   }
 }
 `,

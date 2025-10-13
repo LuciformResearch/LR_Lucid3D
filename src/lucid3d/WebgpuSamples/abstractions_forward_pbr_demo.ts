@@ -1,5 +1,8 @@
 import { mat4 } from 'gl-matrix';
 import { MaterialFactory, ForwardPBRMaterial } from '../Abstractions/MaterialFactory';
+import { DefaultTextures } from '../Abstractions/DefaultTextures';
+import { PBRDebugPanel } from './pbr_debug_panel';
+import { loadTexture2D } from '../util/texture-loader';
 
 // Minimal forward PBR demo using the new abstractions. Not wired by default.
 export class AbstractionForwardPBRDemo {
@@ -17,12 +20,33 @@ export class AbstractionForwardPBRDemo {
 
   async initialize() {
     // Material with solid base color, no textures
-    this.material = MaterialFactory.buildForward(this.device, this.format, {
+    const desc: any = {
       shading: 'pbr',
       textures: {},
       scalars: { metallic: 0.0, roughness: 1.0 },
-    });
+      environment: {
+        diffuse: { view: DefaultTextures.neutralEnvironmentCube(this.device) },
+        specular: { view: DefaultTextures.neutralEnvironmentCube(this.device), mipLevels: 1 },
+        brdfLut: { view: DefaultTextures.brdfLutView(this.device) },
+        diffuseIntensity: 1.0,
+        specularIntensity: 1.0,
+      },
+    };
+    const matcapUrl = 'assets/textures/matcaps/0404E8_0404B5_0404CB_3333FC.png';
+    try {
+      const matcapView = await loadTexture2D(this.device, matcapUrl);
+      desc.extensions = {
+        matcap: {
+          texture: { view: matcapView },
+          factor: 1.0,
+        },
+      };
+    } catch (err) {
+      console.warn('Failed to load default matcap', err);
+    }
+    this.material = MaterialFactory.buildForward(this.device, this.format, desc);
     this.material.setBaseColorFactor([0.95, 0.55, 0.15, 1.0]);
+    PBRDebugPanel.getInstance().attachMaterials([this.material]);
 
     // Cube geometry interleaved for pipeline: pos3, norm3, uv2, tangent4, joints4, weights4 (stride = 20 floats)
     // Pick a simple consistent tangent per face (not perfect but OK for demo)
@@ -96,6 +120,7 @@ export class AbstractionForwardPBRDemo {
     commandEncoder: GPUCommandEncoder,
     swapView: GPUTextureView,
     viewProj: mat4,
+    viewMatrix: mat4,
     cameraPos: [number, number, number] = [0, 0, 1],
   ) {
     // Update uniforms (model rotates slowly)
@@ -105,6 +130,7 @@ export class AbstractionForwardPBRDemo {
     mat4.rotateX(model, model, 0.35);
     this.material.setProjView(viewProj as unknown as Float32Array);
     this.material.setModel(model as unknown as Float32Array);
+    this.material.setView(viewMatrix as unknown as Float32Array);
     this.material.setCameraPosition(cameraPos);
     this.material.updateUniforms();
 

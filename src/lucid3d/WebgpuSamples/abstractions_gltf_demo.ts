@@ -6,7 +6,9 @@ import { MaterialFactory2 } from '../Abstractions/MaterialFactory2';
 import { AbstractDynamicGeom, AttributeComponentCount, AttributePlacement } from '../WebgpuGeom';
 import { WebgpuMaterial } from '../PBRMaterial/WebgpuMaterial';
 import { QueryArgs } from '../../components/WebgpuApp/util/query-args';
+import { DefaultTextures } from '../Abstractions/DefaultTextures';
 import { PBRDebugPanel } from './pbr_debug_panel';
+import { loadTexture2D } from '../util/texture-loader';
 
 type PrimInfo = {
   geom: AbstractDynamicGeom;
@@ -50,7 +52,42 @@ export class AbstractionGltfDemo {
           if (srcMat?.occlusionTexture) desc.textures.ao = { view: (await srcMat.occlusionTexture.GetGPUTex())?.createView() };
           if (srcMat?.emissiveTexture) desc.textures.emissive = { view: (await srcMat.emissiveTexture.GetGPUTex())?.createView() };
           const useV2 = QueryArgs.getBool('absV2', false);
-          if (useV2) this.useNewPipeline = true;
+          if (useV2) {
+            this.useNewPipeline = true;
+            const iblEnabled = QueryArgs.getBool('iblEnable', true);
+            const iblDiffuse = QueryArgs.getFloat('iblDiffuse', 1.0);
+            const iblSpec = QueryArgs.getFloat('iblSpec', iblDiffuse);
+            if (iblEnabled && (iblDiffuse > 0 || iblSpec > 0)) {
+              desc.environment = {
+                diffuse: { view: DefaultTextures.neutralEnvironmentCube(device) },
+                specular: { view: DefaultTextures.neutralEnvironmentCube(device), mipLevels: 1 },
+                brdfLut: { view: DefaultTextures.brdfLutView(device) },
+                diffuseIntensity: iblDiffuse,
+                specularIntensity: iblSpec,
+              };
+            }
+            const clearcoatFactor = QueryArgs.getFloat('clearcoat', 0.0);
+            if (clearcoatFactor > 0) {
+              desc.extensions = desc.extensions ?? {};
+              desc.extensions.clearcoat = {
+                factor: clearcoatFactor,
+                roughness: QueryArgs.getFloat('ccrough', 0.25),
+              };
+            }
+            const matcapAsset = QueryArgs.getString('matcap', null);
+            if (matcapAsset) {
+              try {
+                const matcapView = await loadTexture2D(device, `assets/textures/matcaps/${matcapAsset}`);
+                desc.extensions = desc.extensions ?? {};
+                desc.extensions.matcap = {
+                  texture: { view: matcapView },
+                  factor: QueryArgs.getFloat('matcapFactor', 1.0),
+                };
+              } catch (err) {
+                console.warn('Failed to load matcap', matcapAsset, err);
+              }
+            }
+          }
           const material = useV2
             ? MaterialFactory2.buildForward(device, this.ctx.presentationFormat, desc)
             : MaterialFactory.buildForward(device, this.ctx.presentationFormat, desc);
@@ -149,7 +186,7 @@ export class AbstractionGltfDemo {
     this.depthView = this.depthTex.createView();
   }
 
-  draw(commandEncoder: GPUCommandEncoder, swapView: GPUTextureView, viewProj: mat4, cameraPos: [number, number, number]) {
+  draw(commandEncoder: GPUCommandEncoder, swapView: GPUTextureView, viewProj: mat4, viewMatrix: mat4, cameraPos: [number, number, number]) {
     const pass = commandEncoder.beginRenderPass({
       colorAttachments: [{ view: swapView, clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
       depthStencilAttachment: { view: this.depthView!, depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' },
@@ -159,6 +196,7 @@ export class AbstractionGltfDemo {
       const model = (p.owner.GetMatrixWorld().toArray() as unknown) as Float32Array;
       p.material.setProjView(viewProj as unknown as Float32Array);
       p.material.setModel(model);
+      p.material.setView(viewMatrix as unknown as Float32Array);
       p.material.setCameraPosition(cameraPos);
       p.material.updateUniforms();
       pass.setPipeline(p.material.pipeline);

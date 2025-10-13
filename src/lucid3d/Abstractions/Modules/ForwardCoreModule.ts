@@ -18,13 +18,18 @@ export class ForwardCoreModule extends ShaderModuleBase {
   uniforms(reg: UniformRegistry): void {
     reg.addMat4('PROJVIEW');
     reg.addMat4('MODEL');
+    reg.addMat4('VIEW');
     reg.addVec4('BASE_COLOR_FACTOR', { defaultValue: [1, 1, 1, 1] });
     reg.addVec2('METAL_ROUGH', { defaultValue: [0, 1] });
     reg.addFloat('OCCLUSION_STRENGTH', { defaultValue: 1 });
     reg.addVec3('EMISSIVE_FACTOR', { defaultValue: [1, 1, 1] });
     reg.addVec3('CAMERA_POS', { defaultValue: [0, 0, 0] });
     reg.addVec4('DEBUG_PARAMS', { defaultValue: [0, 0, 0, 0] });
-    reg.addVec3('CAMERA_POS', { defaultValue: [0, 0, 0] });
+    reg.addVec4('LIGHT_DIR_INT', { defaultValue: [0.3, 0.8, 0.5, 1.0] });
+    reg.addVec4('LIGHT_COLOR', { defaultValue: [1, 1, 1, 0] });
+    reg.addVec2('CLEARCOAT', { defaultValue: [0, 0] });
+    reg.addVec4('IBL_PARAMS', { defaultValue: [0, 0, 0, 0] });
+    reg.addFloat('MATCAP_FACTOR', { defaultValue: 0 });
     const uvDefaults: Record<string, [number, number, number, number]> = {
       BC_UV_SO: [1, 1, 0, 0],
       BC_UV_RS: [1, 0, 0, 0],

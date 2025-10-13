@@ -15,7 +15,7 @@ import { Metrics } from './util/metrics';
 type AbstractionDemo = {
   initialize(): Promise<void>;
   resize(width: number, height: number): void;
-  draw(commandEncoder: GPUCommandEncoder, swapView: GPUTextureView, viewProj: mat4, cameraPos: [number, number, number]): void;
+  draw(commandEncoder: GPUCommandEncoder, swapView: GPUTextureView, viewProj: mat4, viewMatrix: mat4, cameraPos: [number, number, number]): void;
 };
 
 export class WebgpuMain {
@@ -244,7 +244,7 @@ export class WebgpuMain {
       const camPosVec = cam.position as any;
       const cameraPos: [number, number, number] = [camPosVec.x, camPosVec.y, camPosVec.z];
       const swapView = this.context.getCurrentTexture().createView();
-      this.absDemo.draw(commandEncoder, swapView, viewProj, cameraPos);
+      this.absDemo.draw(commandEncoder, swapView, viewProj, viewMatrix, cameraPos);
       this.device.queue.submit([commandEncoder.finish()]);
       return;
     }
