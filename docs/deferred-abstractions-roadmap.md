@@ -1,7 +1,7 @@
 # Deferred Renderer Abstractions Roadmap
 
 ## 1. Snapshot of the Current Pipeline
-- **Forward PBR (absV2)** already runs on modular shader building blocks (`ForwardCoreModule`, `BaseColorModule`, `MatcapModule`, …) with manifest-driven assets and the debug panel.
+- **Forward PBR abstractions** already run on modular shader building blocks (`ForwardCoreModule`, `BaseColorModule`, `MatcapModule`, …) with manifest-driven assets and the debug panel.
 - **Deferred renderer** still uses the legacy WebGPU sample code:
   - hard-coded WGSL for G-Buffer encode/decode (`DeferredRenderer.ts`, `WebgpuSceneRendererGBuffer.ts`);
   - a monolithic lighting shader with custom bindings and little reuse;
@@ -71,4 +71,3 @@
 1. Draft `PBRCommonModule` + shared uniform structs (Forward + Deferred consume the same definitions).
 2. Prototype G-buffer encode module using the new factory for a single test material (albedo/normal/roughness).
 3. Document binding layout & module contract in `docs/abstractions/README.md` (or equivalent) for contributors.
-

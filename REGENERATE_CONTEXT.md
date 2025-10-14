@@ -18,16 +18,15 @@ Quick-start for the next Codex session: current branch, build entry points, feat
 
 ## Runtime Flags (URL query)
 - `model=fox|dragon|sponza` or `modelurl=<path>`
-- `absV2=1` → abstraction forward PBR pipeline (auto shows debug panel)
 - `deferred=1` → deferred renderer (3RT/2RT toggle via `gbufTargets`)
 - Lighting & diagnostics: `lights=<n>`, `albedo=1`, `metrics=1`, `noanim=1`, `camx/camy/camz`, `yaw/pitch`
-- PBR extras (absV2):
-  - IBL: `iblEnable=0|1`, `iblDiffus e`, `iblSpec`, `iblEnv=<manifest-name>`
-- Matcap: `matcap=<manifest-name|filename>`, `matcapFactor=<0-1>`
-- Procedural primitive preview: `primitive=uvsphere|icosphere` (optional `primitiveRadius`, `primitiveSegments`, `primitiveRings`, `primitiveSubdiv`)
+- PBR extras:
+  - IBL: `iblEnable=0|1`, `iblDiffuse`, `iblSpec`, `iblEnv=<manifest-name>`
+  - Matcap: `matcap=<manifest-name|filename>`, `matcapFactor=<0-1>`
+  - Procedural primitive preview: `primitive=uvsphere|icosphere` (optional `primitiveRadius`, `primitiveSegments`, `primitiveRings`, `primitiveSubdiv`)
   - Clear coat: `clearcoat`, `ccrough`
 
-## Debug Panel (absV2 only)
+## Debug Panel
 - Lives in `src/lucid3d/WebgpuSamples/pbr_debug_panel.ts`
 - Controls:
   - Directional light vector/intensity/color + toggle
@@ -70,7 +69,7 @@ Quick-start for the next Codex session: current branch, build entry points, feat
 4. **Matcap UX polish**
    - Show preview swatches, add handedness flip option, allow custom upload.
 5. **Skinned mesh abstractions**
-   - Fox skinning still missing in absV2 path; wire joint matrices into shader modules.
+   - Fox skinning still missing in abstractions path; wire joint matrices into shader modules.
 6. **Deferred multi-light regression**
    - `?lights>0` remains incorrect; revisit light loop/world-space reconstruction in `DeferredRenderer.lightingPass`.
 7. **Performance**
@@ -81,9 +80,10 @@ Quick-start for the next Codex session: current branch, build entry points, feat
 ## Quick How-To Next Session
 1. Refresh asset manifest if textures changed: `node scripts/generate-asset-manifest.js`.
 2. Launch dragon abstraction demo with presets:  
-   `https://localhost:4400/?absV2=1&model=dragon&iblEnv=816-hdri-skies-com&matcap=0404E8_0404B5_0404CB_3333FC`.
+   `https://localhost:4400/?model=dragon&iblEnv=816-hdri-skies-com&matcap=0404E8_0404B5_0404CB_3333FC`.
 3. Validate panel preset swaps (IBL + matcap) and ensure new cubemap loader behaves (check console for warnings).
 4. Profile specular mip quality; decide on GGX importance sampling approach.
 5. If time remains, tackle deferred multi-light shader fix in `src/lucid3d/Deferred/DeferredRenderer.ts`.
+6. Legacy forward path remains available via `?absV2=0` or `?legacy=1` if needed for comparison.
 
 Keep this file updated before ending a session (noting new flags, fixes, outstanding risks).

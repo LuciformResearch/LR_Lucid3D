@@ -108,7 +108,10 @@ export class WebgpuMain {
 
 
 
-    const useAbsDemo = QueryArgs.getBool('absDemo', false) || QueryArgs.getBool('absV2', false);
+    const absFlag = QueryArgs.getString('absV2', null);
+    const absEnabled = absFlag === null ? true : QueryArgs.getBool('absV2', false);
+    const legacyOverride = QueryArgs.getBool('legacy', false);
+    const useAbsDemo = !legacyOverride && (absEnabled || QueryArgs.getBool('absDemo', false));
     if (!useAbsDemo) {
       this.cubeTest = new CubeRenderTest(this);
       await this.cubeTest.initialize();

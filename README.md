@@ -49,8 +49,8 @@ All behaviour is controlled through URL query flags. Examples below assume the d
 | Forward (default fox) | `https://localhost:4400/` |
 | Deferred dragon (2-RT octa packing) | `https://localhost:4400/?deferred=1&model=dragon&gbufTargets=2&oct=1` |
 | Deferred sponza baseline | `https://localhost:4400/?deferred=1&model=sponza` |
-| **Abstractions** dragon (new shader modules) | `https://localhost:4400/?absV2=1&model=dragon` |
-| Abstractions with IBL/matcap | `https://localhost:4400/?absV2=1&model=dragon&iblDiffuse=1&iblSpec=1&matcap=0404E8_0404B5_0404CB_3333FC.png` |
+| **Abstractions** dragon (new shader modules) | `https://localhost:4400/?model=dragon` |
+| Abstractions with IBL/matcap | `https://localhost:4400/?model=dragon&iblDiffuse=1&iblSpec=1&matcap=0404E8_0404B5_0404CB_3333FC.png` |
 
 Common flags
 
@@ -58,6 +58,7 @@ Common flags
 - `metrics=1` → overlay resource counters
 - `noanim=1` → freezes animations/skinning uploads
 - Forward/abstractions: `albedo=1` to force albedo-only output
+- Legacy forward renderer: `absV2=0` or `legacy=1`
 - Deferred: `gbufTargets=2|3`, `oct=1`, `gbuf=G0|G1|G2` (visualise G-buffer)
 - Camera presets: `camx/camy/camz`, `yaw`, `pitch`, `speed`
 - Lighting experiments (abstractions only):
@@ -107,7 +108,7 @@ Entry points
 ### Overlay (all modes)
 Shows FPS, texture availability, optional metrics (`metrics=1`). Updated every 0.25 s.
 
-### PBR Debug Panel (absV2)
+### PBR Debug Panel
 Auto-appears in abstraction mode. Controls:
 
 - Directional light on/off, intensity, color, direction sliders
@@ -126,9 +127,9 @@ Automated tests are minimal; recommended manual checks:
 1. **Build passes** – `npm run build`
 2. **Forward overview** – `https://localhost:4400/?model=fox`
 3. **Deferred G-buffer** – `https://localhost:4400/?deferred=1&model=dragon&gbufTargets=2&oct=1`
-4. **Abstractions** – `https://localhost:4400/?absV2=1&model=dragon&iblDiffuse=1&iblSpec=1&matcap=0404E8_0404B5_0404CB_3333FC.png`
+4. **Abstractions** – `https://localhost:4400/?model=dragon&iblDiffuse=1&iblSpec=1&matcap=0404E8_0404B5_0404CB_3333FC.png`
    - Verify sliders update lighting; try toggling matcap/IBL/off
-5. **Skinning** – `https://localhost:4400/?model=fox` (forward) and `?absV2=1&model=fox` (abstractions) to confirm anim playback
+5. **Skinning** – `https://localhost:4400/?model=fox` (abstractions by default) and `?absV2=0&model=fox` to compare legacy forward path
 
 When tweaking shaders, keep DevTools console open: WebGPU validation errors surface there (e.g. missing bindings, incompatible usages).
 

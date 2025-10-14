@@ -55,7 +55,7 @@ export class AbstractionGltfDemo {
     // Traverse transforms, collect mesh primitives
     const stack = [...this.transforms];
     const device = this.ctx.device;
-    const useV2 = QueryArgs.getBool('absV2', false);
+    const useV2 = QueryArgs.getBool('absV2', true);
     const iblEnabled = QueryArgs.getBool('iblEnable', true);
     const iblDiffuseIntensity = (() => {
       const val = QueryArgs.getFloat('iblDiffuse', null);
