@@ -27,9 +27,13 @@ export class GltfRenderTest {
 	}
 	async initialize() {
 		let loader = new Gltf2Loader(this.renderer);
-		
     const model = (QueryArgs.getString('model', 'fox') || 'fox').toLowerCase();
     const overrideUrl = QueryArgs.getString('modelurl', '');
+    if (!overrideUrl && model === 'uvsphere') {
+      // Procedural mode: skip glTF loading and let the abstraction demo generate geometry.
+      return;
+    }
+
     const url = overrideUrl || (
       model === 'sponza' ? 'assets/media/gltf/sponza/Sponza.gltf'
       : model === 'dragon' ? 'assets/stanford_dragon_pbr/scene.gltf'

@@ -204,46 +204,53 @@ export class AbstractDynamicAttributeBase extends AbstractAttributeBase
 
 	getArrayBuffer(updated : {updated: boolean} = {updated: false})
 	{
-		if(this._arrayNeedUpdate == true)
-		{
-			this._array = this.isIndices ? new Uint16Array(this.baseArray) : new Float32Array(this.baseArray);
-			this._arrayNeedUpdate = false;
-			updated.updated = true;
-		}
+        if(this._arrayNeedUpdate == true)
+        {
+            if (this.isIndices) {
+                // TODO: Switch to Uint32Array when GPU pipeline is ready for 32-bit indices.
+                this._array = new Uint16Array(this.baseArray.map((value) => value & 0xffff));
+            } else {
+                this._array = new Float32Array(this.baseArray);
+            }
+            this._arrayNeedUpdate = false;
+            updated.updated = true;
+        }
 		return (this._array);
 	}
 	getWebgpuBuffer(material: WebgpuMaterial)
 	{
 		if(this._webgpuBuffer == undefined || this._webgpuBufferNeedUpdate == true)
 		{
-			this._webgpuBufferNeedUpdate = false;
-			let array = this.isIndices ? new Uint16Array(this.baseArray) : new Float32Array(this.baseArray);
-			if(this._webgpuBuffer != undefined)
-			{
-				this._webgpuBuffer.destroy();
-				this._webgpuBuffer = undefined;
-			}
+            this._webgpuBufferNeedUpdate = false;
+            const indexArray = this.isIndices
+                ? new Uint16Array(this.baseArray.map((value) => value & 0xffff))
+                : new Float32Array(this.baseArray);
+            if(this._webgpuBuffer != undefined)
+            {
+                this._webgpuBuffer.destroy();
+                this._webgpuBuffer = undefined;
+            }
 			if(this._webgpuBuffer == undefined)
 			{
 				// WebGPU requires size to be a multiple of 4 when mappedAtCreation is true
-				const alignedSize = (array.byteLength + 3) & ~3;
-				let buffer = material.renderer.device.createBuffer({
-					usage: this.isIndices ? GPUBufferUsage.INDEX : GPUBufferUsage.VERTEX,
-					size: alignedSize, mappedAtCreation: true
-				});
-				this._webgpuBuffer = buffer;
-				if(this.isIndices)
-				{
-					new Uint16Array(this._webgpuBuffer.getMappedRange()).set(array);
+                const alignedSize = (indexArray.byteLength + 3) & ~3;
+                let buffer = material.renderer.device.createBuffer({
+                    usage: this.isIndices ? GPUBufferUsage.INDEX : GPUBufferUsage.VERTEX,
+                    size: alignedSize, mappedAtCreation: true
+                });
+                this._webgpuBuffer = buffer;
 
-				}
-				else
-				{
-					new Float32Array(this._webgpuBuffer.getMappedRange()).set(array);
-				}
-				this._webgpuBuffer.unmap();
-			}
-		}
+                if(this.isIndices)
+                {
+                    new Uint16Array(this._webgpuBuffer.getMappedRange()).set(indexArray as Uint16Array);
+                }
+                else
+                {
+                    new Float32Array(this._webgpuBuffer.getMappedRange()).set(indexArray as Float32Array);
+                }
+                this._webgpuBuffer.unmap();
+            }
+        }
 		return (this._webgpuBuffer);
 	}
 
@@ -750,6 +757,7 @@ export class AbstractDynamicGeom extends AbstractGeomBase
 			let attr = new AbstractAttribute<T>(itemSize, this, name);
 			this.byNameAttributes[name] = attr;
 			this.allAttributes.push(attr);
+			return attr;
 		}
 	}
 

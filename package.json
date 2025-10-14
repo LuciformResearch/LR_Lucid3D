@@ -7,7 +7,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "start": "webpack --config webpack.config.js -w",
-    "build": "webpack --config webpack.config.js --env production"
+    "build": "webpack --config webpack.config.js --env production",
+    "test:procedural": "npx tsx scripts/procedural-mesh-smoke-test.ts"
   },
   "dependencies": {
     "@petamoriken/float16": "^3.8.1",
@@ -16,6 +17,7 @@
     "@webxr-input-profiles/assets": "^1.0.9",
     "@webxr-input-profiles/motion-controllers": "^1.0.0",
     "browser-sync": "^2.29.3",
+    "earcut": "^2.2.4",
     "gl-matrix": "^3.4.3",
     "typescript": "^5.0.4",
     "webxr": "0.0.0",

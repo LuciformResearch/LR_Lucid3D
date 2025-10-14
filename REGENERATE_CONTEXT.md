@@ -23,7 +23,8 @@ Quick-start for the next Codex session: current branch, build entry points, feat
 - Lighting & diagnostics: `lights=<n>`, `albedo=1`, `metrics=1`, `noanim=1`, `camx/camy/camz`, `yaw/pitch`
 - PBR extras (absV2):
   - IBL: `iblEnable=0|1`, `iblDiffus e`, `iblSpec`, `iblEnv=<manifest-name>`
-  - Matcap: `matcap=<manifest-name|filename>`, `matcapFactor=<0-1>`
+- Matcap: `matcap=<manifest-name|filename>`, `matcapFactor=<0-1>`
+- Procedural primitive preview: `primitive=uvsphere|icosphere` (optional `primitiveRadius`, `primitiveSegments`, `primitiveRings`, `primitiveSubdiv`)
   - Clear coat: `clearcoat`, `ccrough`
 
 ## Debug Panel (absV2 only)
