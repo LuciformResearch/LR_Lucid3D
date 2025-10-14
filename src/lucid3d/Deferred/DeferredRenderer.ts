@@ -4,6 +4,14 @@ import { GBuffer } from './GBuffer';
 import { WebgpuSceneRendererGBuffer } from './WebgpuSceneRendererGBuffer';
 import { WebgpuTransform } from '../WebgpuTransform';
 import { mat4 } from 'gl-matrix';
+import { ShaderComposer } from '../Abstractions/Modules/ShaderComposer';
+import { PBRCommonModule } from '../Abstractions/Modules/PBRCommonModule';
+import { DeferredGBufferModule } from './modules/DeferredGBufferModule';
+import { DeferredDirectionalLightModule } from './modules/DeferredDirectionalLightModule';
+import { DeferredPointLightModule } from './modules/DeferredPointLightModule';
+
+const deferredLightingTemplate = require('./templates/deferred_lighting.frag.wgsl').default as string;
+const deferredLightingMultiTemplate = require('./templates/deferred_lighting_multilight.frag.wgsl').default as string;
 
 export class DeferredRenderer {
   private gbuffer: GBuffer;
@@ -11,10 +19,9 @@ export class DeferredRenderer {
   private sampler: GPUSampler;
   private lightingPipeline: GPURenderPipeline;
   private lightingBindGroup: GPUBindGroup;
-  // Lighting shaders use textureLoad; no sampler needed in bindgroup
+  // Lighting shader variants (single light uses sampler; multi-light uses textureLoad)
 
   private fsVertModule: GPUShaderModule;
-  private lightingFragModule: GPUShaderModule;
 
   private geoPassDesc: GPURenderPassDescriptor;
   public sceneRenderer?: WebgpuSceneRendererGBuffer;
@@ -40,7 +47,6 @@ export class DeferredRenderer {
     // Use nearest to avoid any potential filterable-float issues on some GPUs
     this.sampler = device.createSampler({ minFilter: 'nearest', magFilter: 'nearest' });
     this.fsVertModule = device.createShaderModule({ code: require('./shaders/fullscreen_triangle.wgsl').default });
-    this.lightingFragModule = device.createShaderModule({ code: require('./shaders/deferred_lighting.wgsl').default });
     this.targetCount = Math.max(2, Math.min(3, QueryArgs.getInt('gbufTargets', 3) || 3));
     this.formats = (this.targetCount === 2)
       ? [ 'rgba8unorm', 'rgba8unorm' ]
@@ -180,91 +186,40 @@ export class DeferredRenderer {
         return vec4<f32>(vec3<f32>(ao, ao, ao), 1.0);` : `return vec4<f32>(0.0, 0.0, 0.0, 1.0);`}
       }`;
       fragModule = device.createShaderModule({ code });
-    } else if (this.lightsCount > 0) {
-      const useOct = QueryArgs.getBool('oct', true);
-      const code = `
-      @group(0) @binding(1) var gAlbedoTex: texture_2d<f32>;
-      @group(0) @binding(2) var gNormalRoughTex: texture_2d<f32>;
-      ${this.targetCount === 3 ? '@group(0) @binding(3) var gEmissiveAoTex: texture_2d<f32>;' : ''}
-      @group(0) @binding(${this.targetCount === 3 ? 4 : 3}) var gDepthTex: texture_2d<f32>;
-      struct LightData { position: vec4<f32>, color: vec3<f32>, radius: f32, };
-      struct LightsBuffer { lights: array<LightData>, };
-      @group(1) @binding(0) var<storage, read> lightsBuffer: LightsBuffer;
-      struct Config { numLights: u32, };
-      struct Camera { viewProj: mat4x4<f32>, invViewProj: mat4x4<f32>, };
-      @group(1) @binding(1) var<uniform> config: Config;
-      @group(1) @binding(2) var<uniform> camera: Camera;
-      struct FSIn { @location(0) uv: vec2<f32>, };
-      fn octDecode(e: vec2<f32>) -> vec3<f32> {
-        var v = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
-        if (v.z < 0.0) {
-          let s = vec2<f32>(select(-1.0, 1.0, v.x >= 0.0), select(-1.0, 1.0, v.y >= 0.0));
-          let xy = (1.0 - abs(vec2<f32>(v.y, v.x))) * s;
-          v = vec3<f32>(xy.x, xy.y, v.z);
-        }
-        return normalize(v);
-      }
-      fn world_from_screen(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-        let posClip = vec4<f32>(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0, depth, 1.0);
-        let posWorldW = camera.invViewProj * posClip;
-        return posWorldW.xyz / posWorldW.www;
-      }
-      @fragment fn main(in: FSIn) -> @location(0) vec4<f32> {
-        var uv = in.uv; if (${flip}) { uv = vec2<f32>(uv.x, 1.0 - uv.y); }
-        uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
-        let dims = textureDimensions(gAlbedoTex);
-        let coord = vec2<i32>(i32(uv.x * f32(dims.x - 1)), i32(uv.y * f32(dims.y - 1)));
-        let depth = textureLoad(gDepthTex, coord, 0).x;
-        if (depth >= 1.0) { discard; }
-        let posW = world_from_screen(uv, depth);
-        let g0 = textureLoad(gAlbedoTex, coord, 0);
-        let g1 = textureLoad(gNormalRoughTex, coord, 0);
-        var albedo = clamp(g0.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
-        var n: vec3<f32> = vec3<f32>(0.0,0.0,1.0);
-        if (${this.targetCount === 2 && useOct ? 'true' : 'false'}) {
-          let enc = g1.rg * 2.0 - vec2<f32>(1.0, 1.0);
-          n = octDecode(enc);
-        } else {
-          n = normalize(g1.xyz);
-        }
-        var result = vec3<f32>(0.0);
-        for (var i = 0u; i < config.numLights; i++) {
-          let L = lightsBuffer.lights[i].position.xyz - posW;
-          let dist = length(L);
-          if (dist > lightsBuffer.lights[i].radius) { continue; }
-          let lambert = max(dot(n, normalize(L)), 0.0);
-          result += lambert * pow(1.0 - dist / lightsBuffer.lights[i].radius, 2.0) * lightsBuffer.lights[i].color * albedo;
-        }
-        ${this.targetCount === 3 ? 'let g2 = textureLoad(gEmissiveAoTex, coord, 0); result += g2.rgb;' : ''}
-        result += vec3<f32>(0.2);
-        return vec4<f32>(result, 1.0);
-      }`;
-      fragModule = device.createShaderModule({ code });
     } else {
-      // Modify the lighting shader to support albedo-only mode
-      let lightingCode = require('./shaders/deferred_lighting.wgsl').default as string;
-      if (this.targetCount === 2) {
-        // Remove binding(3) usage and set g2 defaults inside shader
-        lightingCode = lightingCode.replace('@group(0) @binding(3) var gEmissiveAoTex: texture_2d<f32>;', '')
-          .replace(/let g2 = textureSampleLevel\(gEmissiveAoTex, gSampler, uv, 0.0\);/g, 'let g2 = vec4<f32>(0.0, 0.0, 0.0, 1.0);');
-        if (QueryArgs.getBool('oct', true)) {
-          const octFn = `\nfn octDecode(e: vec2<f32>) -> vec3<f32> {\n  var v = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));\n  if (v.z < 0.0) {\n    let s = vec2<f32>(select(-1.0, 1.0, v.x >= 0.0), select(-1.0, 1.0, v.y >= 0.0));\n    let xy = (1.0 - abs(vec2<f32>(v.y, v.x))) * s;\n    v = vec3<f32>(xy.x, xy.y, v.z);\n  }\n  return normalize(v);\n}\n`;
-          lightingCode = octFn + lightingCode;
-          // Support both decoded-normal patterns depending on 3-RT encoding
-          lightingCode = lightingCode.replace('let n = normalize(g1.xyz * 2.0 - vec3<f32>(1.0, 1.0, 1.0));', 'let n = normalize(octDecode(g1.rg * 2.0 - vec2<f32>(1.0, 1.0)));')
-                                     .replace('let n = normalize(g1.xyz);', 'let n = normalize(octDecode(g1.rg * 2.0 - vec2<f32>(1.0, 1.0)));');
-          lightingCode = lightingCode.replace('let roughness = clamp(g1.a, 0.04, 1.0);', 'let roughness = clamp(g1.b, 0.04, 1.0);');
-        }
-      }
-      const modifiedCode = lightingCode.replace(
-        '// DEBUG: Force albedo-only rendering (uncomment to debug)\n  // return vec4<f32>(g0.rgb, 1.0);',
-        `// DEBUG: Force albedo-only rendering
-  if (${albedoOnly}) {
-    return vec4<f32>(g0.rgb, 1.0);
-  }`
+      const flipEnabled = QueryArgs.getBool('flip', false);
+      const hasEmissive = this.targetCount === 3;
+      const useOct = this.targetCount === 2 && QueryArgs.getBool('oct', true);
+      const sampleMode: 'sample' | 'load' = this.lightsCount > 0 ? 'load' : 'sample';
+      const modules = [
+        new PBRCommonModule(),
+        new DeferredGBufferModule({
+          flip: flipEnabled,
+          hasEmissiveAo: hasEmissive,
+          octEncoded: useOct,
+          sampleMode,
+          includeDepth: this.lightsCount > 0,
+        }),
+        this.lightsCount > 0 ? new DeferredPointLightModule() : new DeferredDirectionalLightModule(),
+      ];
+      const template = this.lightsCount > 0
+        ? deferredLightingMultiTemplate
+        : deferredLightingTemplate;
+      const { codeFrag } = ShaderComposer.compose('', template, modules);
+      const bindings = this.buildGBufferBindingDeclarations({
+        includeSampler: sampleMode === 'sample',
+        hasEmissive,
+        includeDepth: this.lightsCount > 0,
+      });
+      let lightingCode = codeFrag.replace('// @@BINDINGS', bindings);
+      lightingCode = lightingCode.replace(
+        'return vec4<f32>(color, 1.0);',
+        `if (${albedoOnly}) {
+    return vec4<f32>(albedo, 1.0);
+  }
+  return vec4<f32>(color, 1.0);`
       );
-      fragModule = device.createShaderModule({ code: modifiedCode });
-      // lighting path uses sampler + textureSampleLevel
+      fragModule = device.createShaderModule({ code: lightingCode });
     }
     if (this.lightsCount > 0) {
       const layout = device.createPipelineLayout({ bindGroupLayouts: [ this.makeGBufferBindGroupLayout(device, true), this.makeLightsBindGroupLayout(device) ] });
@@ -333,6 +288,26 @@ export class DeferredRenderer {
     if (this.targetCount === 3) entries.push({ binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } });
     if (includeDepth) entries.push({ binding: (this.targetCount === 3 ? 4 : 3), visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } });
     return device.createBindGroupLayout({ entries });
+  }
+  private buildGBufferBindingDeclarations(opts: { includeSampler: boolean; hasEmissive: boolean; includeDepth: boolean }): string {
+    const { includeSampler, hasEmissive, includeDepth } = opts;
+    const lines: string[] = [];
+    let nextBinding = includeSampler ? 1 : 1;
+    if (includeSampler) {
+      lines.push('@group(0) @binding(0) var gSampler: sampler;');
+    }
+    lines.push(`@group(0) @binding(${nextBinding}) var gAlbedoTex: texture_2d<f32>;`);
+    nextBinding++;
+    lines.push(`@group(0) @binding(${nextBinding}) var gNormalRoughTex: texture_2d<f32>;`);
+    nextBinding++;
+    if (hasEmissive) {
+      lines.push(`@group(0) @binding(${nextBinding}) var gEmissiveAoTex: texture_2d<f32>;`);
+      nextBinding++;
+    }
+    if (includeDepth) {
+      lines.push(`@group(0) @binding(${nextBinding}) var gDepthTex: texture_2d<f32>;`);
+    }
+    return lines.join('\n');
   }
   private makeLightsBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
     return device.createBindGroupLayout({ entries: [

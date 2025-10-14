@@ -19,11 +19,11 @@ import { IBLModule } from './Modules/IBLModule';
 import { ClearCoatModule } from './Modules/ClearCoatModule';
 import { MatcapModule } from './Modules/MatcapModule';
 import { ShaderModuleBase } from './Modules/ShaderModule';
+import { PBRCommonModule } from './Modules/PBRCommonModule';
 
 type MaterialTexture = NonNullable<MaterialDesc['textures']>[keyof NonNullable<MaterialDesc['textures']>];
 
 // Register a few baseline chunks (small stubs)
-GlobalChunks.register('brdf', require('./chunks/brdf.wgsl').default);
 GlobalChunks.register('tbn', require('./chunks/tbn.wgsl').default);
 
 export class GeneratedForwardMaterial {
@@ -108,6 +108,7 @@ export class MaterialFactory {
     const matcapFactor = matcapExt?.factor ?? 0;
 
     const modules: ShaderModuleBase[] = [
+      new PBRCommonModule(),
       new ForwardCoreModule({ enableSkinning: true }),
       new BaseColorModule({ enabled: !!baseColorTex, uvSet: baseColorTex?.uvSet ?? 0 }),
       new MetallicRoughnessModule({
@@ -153,7 +154,7 @@ export class MaterialFactory {
 
     const composed = ShaderComposer.compose(vertTemplate, fragTemplate, modules);
     const vs = composeWGSL(defines.toWgslConsts(), ['tbn'], composed.codeVert);
-    const fs = composeWGSL(defines.toWgslConsts(), ['brdf'], composed.codeFrag);
+    const fs = composeWGSL(defines.toWgslConsts(), [], composed.codeFrag);
     const vert = device.createShaderModule({ code: vs });
     const frag = device.createShaderModule({ code: fs });
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'nearest' });
