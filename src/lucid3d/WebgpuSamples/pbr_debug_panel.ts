@@ -1,4 +1,8 @@
 import { ForwardPBRMaterial } from '../Abstractions/MaterialFactory';
+import { MATCAP_ASSETS, IBL_ENVIRONMENT_ASSETS } from '../assets/asset-manifest';
+import { loadTexture2D } from '../util/texture-loader';
+import { loadEnvironmentFromHDR, EnvironmentMaps } from '../util/environment-loader';
+import { QueryArgs } from '../../components/WebgpuApp/util/query-args';
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -28,6 +32,9 @@ type PanelState = {
   matcapFactor: number;
   matcapEnabled: boolean;
   debugMode: number;
+  iblSelection: string | null;
+  matcapSelection: string | null;
+  matcapDebug: boolean;
 };
 
 export class PBRDebugPanel {
@@ -38,22 +45,62 @@ export class PBRDebugPanel {
     }
     return this.instance;
   }
+  // Listeners for spawning/despawning a dedicated matcap debug plane
+  private matcapPlaneListeners: Array<(enabled: boolean) => void> = [];
+  private environmentListeners: Array<(maps: EnvironmentMaps | null) => void> = [];
+  onMatcapPlaneToggle(cb: (enabled: boolean) => void) { this.matcapPlaneListeners.push(cb); }
+  onEnvironmentChange(cb: (maps: EnvironmentMaps | null) => void) { this.environmentListeners.push(cb); }
 
   private container: HTMLDivElement;
   private materials = new Set<ForwardPBRMaterial>();
   private iblMaxMip = new WeakMap<ForwardPBRMaterial, number>();
   private hasMatcap = false;
+  private device: GPUDevice | null = null;
+  private environmentMaps: EnvironmentMaps | null = null;
+  private currentEnvironment: string | null = null;
+  private currentMatcap: string | null = null;
+  private iblCache = new Map<string, Promise<EnvironmentMaps>>();
+  private iblResolved = new Map<string, EnvironmentMaps>();
+  private matcapCache = new Map<string, Promise<GPUTextureView>>();
+  private matcapResolved = new Map<string, GPUTextureView>();
   private state: PanelState = {
     lightDir: [0.3, 0.8, 0.5],
     dirIntensity: 1.0,
     lightColor: [1, 1, 1],
     dirEnabled: true,
-    iblDiffuse: 1.0,
-    iblSpecular: 1.0,
-    iblEnabled: true,
-    matcapFactor: 1.0,
-    matcapEnabled: true,
+    iblDiffuse: (() => {
+      const diffuse = QueryArgs.getFloat('iblDiffuse', null);
+      return diffuse ?? 1.0;
+    })(),
+    iblSpecular: (() => {
+      const diffuse = QueryArgs.getFloat('iblDiffuse', null);
+      const spec = QueryArgs.getFloat('iblSpec', null);
+      return spec ?? diffuse ?? 1.0;
+    })(),
+    iblEnabled: QueryArgs.getBool('iblEnable', true),
+    matcapFactor: (() => {
+      const factor = QueryArgs.getFloat('matcapFactor', null);
+      return factor ?? 1.0;
+    })(),
+    matcapEnabled: (() => {
+      const factor = QueryArgs.getFloat('matcapFactor', null);
+      if (factor !== null) return factor > 0.001;
+      return QueryArgs.getString('matcap', null) !== null;
+    })(),
     debugMode: 0,
+    iblSelection: (() => {
+      const env = QueryArgs.getString('iblEnv', null);
+      if (!env) return null;
+      const match = IBL_ENVIRONMENT_ASSETS.find((asset) => asset.name === env);
+      return match?.name ?? null;
+    })(),
+    matcapSelection: (() => {
+      const selected = QueryArgs.getString('matcap', null);
+      if (!selected) return null;
+      const match = MATCAP_ASSETS.find((asset) => asset.url.endsWith(selected) || asset.name === selected);
+      return match?.name ?? null;
+    })(),
+    matcapDebug: false,
   };
 
   private dirInputs: { x: HTMLInputElement; y: HTMLInputElement; z: HTMLInputElement; };
@@ -63,8 +110,10 @@ export class PBRDebugPanel {
   private iblDiffuseInput: HTMLInputElement;
   private iblSpecInput: HTMLInputElement;
   private iblToggle: HTMLInputElement;
+  private iblSelect: HTMLSelectElement | null = null;
   private matcapToggle: HTMLInputElement | null = null;
   private matcapInput: HTMLInputElement | null = null;
+  private matcapSelect: HTMLSelectElement | null = null;
   private matcapSection: HTMLDivElement | null = null;
   private debugChecks: HTMLInputElement[] = [];
   private debugOptions: DebugModeOption[] = [
@@ -210,6 +259,41 @@ export class PBRDebugPanel {
     iblSection.appendChild(iblSpec.wrapper);
     this.iblDiffuseInput = iblDiffuse.input;
     this.iblSpecInput = iblSpec.input;
+    if (IBL_ENVIRONMENT_ASSETS.length > 0) {
+      const iblPresetRow = document.createElement('div');
+      iblPresetRow.style.display = 'flex';
+      iblPresetRow.style.alignItems = 'center';
+      iblPresetRow.style.marginTop = '6px';
+      const iblPresetLabel = document.createElement('span');
+      iblPresetLabel.textContent = 'Preset';
+      iblPresetLabel.style.width = '60px';
+      iblPresetLabel.style.display = 'inline-block';
+      this.iblSelect = document.createElement('select');
+      this.iblSelect.style.flex = '1';
+      this.iblSelect.style.padding = '2px 4px';
+      const noneOpt = document.createElement('option');
+      noneOpt.value = 'none';
+      noneOpt.textContent = 'Aucun';
+      this.iblSelect.appendChild(noneOpt);
+      for (const asset of IBL_ENVIRONMENT_ASSETS) {
+        const opt = document.createElement('option');
+        opt.value = asset.name;
+        opt.textContent = asset.label;
+        this.iblSelect.appendChild(opt);
+      }
+      this.iblSelect.value = this.state.iblSelection ?? 'none';
+      this.iblSelect.addEventListener('change', () => {
+        const value = this.iblSelect!.value;
+        if (value === 'none') {
+          void this.selectEnvironment(null);
+        } else {
+          void this.selectEnvironment(value);
+        }
+      });
+      iblPresetRow.appendChild(iblPresetLabel);
+      iblPresetRow.appendChild(this.iblSelect);
+      iblSection.appendChild(iblPresetRow);
+    }
 
     this.matcapSection = this.createSection('Matcap');
     this.matcapSection.style.display = 'none';
@@ -237,12 +321,87 @@ export class PBRDebugPanel {
     });
     this.matcapSection.appendChild(matcapSlider.wrapper);
     this.matcapInput = matcapSlider.input;
+    if (MATCAP_ASSETS.length > 0) {
+      const matcapSelectRow = document.createElement('div');
+      matcapSelectRow.style.display = 'flex';
+      matcapSelectRow.style.alignItems = 'center';
+      matcapSelectRow.style.marginTop = '6px';
+      const matcapLabel = document.createElement('span');
+      matcapLabel.textContent = 'Preset';
+      matcapLabel.style.width = '60px';
+      matcapLabel.style.display = 'inline-block';
+      this.matcapSelect = document.createElement('select');
+      this.matcapSelect.style.flex = '1';
+      this.matcapSelect.style.padding = '2px 4px';
+      const noneOption = document.createElement('option');
+      noneOption.value = 'none';
+      noneOption.textContent = 'Aucun';
+      this.matcapSelect.appendChild(noneOption);
+      for (const asset of MATCAP_ASSETS) {
+        const opt = document.createElement('option');
+        opt.value = asset.name;
+        opt.textContent = asset.name;
+        this.matcapSelect.appendChild(opt);
+      }
+      this.matcapSelect.value = this.state.matcapSelection ?? 'none';
+      this.matcapSelect.addEventListener('change', () => {
+        const value = this.matcapSelect!.value;
+        if (value === 'none') {
+          this.state.matcapEnabled = false;
+          if (this.matcapToggle) this.matcapToggle.checked = false;
+          void this.selectMatcap(null);
+        } else {
+          void this.selectMatcap(value);
+        }
+      });
+      matcapSelectRow.appendChild(matcapLabel);
+      matcapSelectRow.appendChild(this.matcapSelect);
+      this.matcapSection.appendChild(matcapSelectRow);
+    }
 
     const debugSection = this.createSection('Debug view');
     const infoLine = document.createElement('div');
     infoLine.textContent = 'Afficher :';
     infoLine.style.marginBottom = '4px';
     debugSection.appendChild(infoLine);
+
+    // Matcap debug checkbox
+    const matcapDebugRow = document.createElement('div');
+    matcapDebugRow.style.display = 'flex';
+    matcapDebugRow.style.alignItems = 'center';
+    matcapDebugRow.style.marginBottom = '4px';
+    const matcapDebugCheckbox = document.createElement('input');
+    matcapDebugCheckbox.type = 'checkbox';
+    matcapDebugCheckbox.style.marginRight = '8px';
+    matcapDebugCheckbox.addEventListener('change', () => {
+      this.state.matcapDebug = matcapDebugCheckbox.checked;
+      this.applyMatcapDebug();
+    });
+    const matcapDebugLabel = document.createElement('span');
+    matcapDebugLabel.textContent = 'Sphère matcap';
+    matcapDebugRow.appendChild(matcapDebugCheckbox);
+    matcapDebugRow.appendChild(matcapDebugLabel);
+    debugSection.appendChild(matcapDebugRow);
+
+    // Dedicated matcap plane toggle (adds/removes a simple UV plane in scene)
+    const matcapPlaneRow = document.createElement('div');
+    matcapPlaneRow.style.display = 'flex';
+    matcapPlaneRow.style.alignItems = 'center';
+    matcapPlaneRow.style.marginBottom = '4px';
+    const matcapPlaneCheckbox = document.createElement('input');
+    matcapPlaneCheckbox.type = 'checkbox';
+    matcapPlaneCheckbox.style.marginRight = '8px';
+    matcapPlaneCheckbox.addEventListener('change', () => {
+      const enabled = matcapPlaneCheckbox.checked;
+      for (const cb of this.matcapPlaneListeners) {
+        try { cb(enabled); } catch {}
+      }
+    });
+    const matcapPlaneLabel = document.createElement('span');
+    matcapPlaneLabel.textContent = 'Plan matcap (debug)';
+    matcapPlaneRow.appendChild(matcapPlaneCheckbox);
+    matcapPlaneRow.appendChild(matcapPlaneLabel);
+    debugSection.appendChild(matcapPlaneRow);
 
     this.debugOptions.forEach((opt) => {
       const row = document.createElement('div');
@@ -288,6 +447,9 @@ export class PBRDebugPanel {
   }
 
   attachMaterials(materials: ForwardPBRMaterial[]) {
+    if (!this.device && materials.length > 0) {
+      this.device = materials[0].device;
+    }
     let added = false;
     let hasMatcap = this.hasMatcap;
     for (const mat of materials) {
@@ -316,11 +478,18 @@ export class PBRDebugPanel {
       if (this.hasMatcap) {
         if (this.matcapInput) this.matcapInput.value = this.state.matcapFactor.toString();
         if (this.matcapToggle) this.matcapToggle.checked = this.state.matcapEnabled;
+        if (this.matcapSelect) this.matcapSelect.value = this.state.matcapSelection ?? 'none';
       }
     }
+    if (this.iblSelect) this.iblSelect.value = this.state.iblSelection ?? 'none';
     if (this.materials.size > 0) {
       this.container.style.display = 'block';
       if (added) {
+        if (this.environmentMaps) this.updateEnvironmentBindings(materials);
+        if (this.currentMatcap) {
+          const view = this.matcapResolved.get(this.currentMatcap);
+          if (view) this.applyMatcapTexture(view, materials);
+        }
         this.applyLighting(materials);
         this.applyIBL(materials);
         this.applyMatcap(materials);
@@ -330,6 +499,32 @@ export class PBRDebugPanel {
         this.applyIBL();
         this.applyMatcap();
         this.applyDebugMode();
+      }
+      if (!this.environmentMaps && this.state.iblSelection) void this.selectEnvironment(this.state.iblSelection);
+      if (!this.currentMatcap && this.state.matcapSelection) void this.selectMatcap(this.state.matcapSelection);
+    }
+  }
+
+  registerEnvironment(name: string, maps: EnvironmentMaps) {
+    this.iblResolved.set(name, maps);
+    if (this.state.iblSelection === name) {
+      this.environmentMaps = maps;
+      this.currentEnvironment = name;
+      if (this.materials.size > 0) {
+        this.updateEnvironmentBindings();
+        this.applyIBL();
+      }
+      this.notifyEnvironmentChange(this.environmentMaps);
+    }
+  }
+
+  registerMatcap(name: string, view: GPUTextureView) {
+    this.matcapResolved.set(name, view);
+    if (this.state.matcapSelection === name) {
+      this.currentMatcap = name;
+      if (this.materials.size > 0) {
+        this.applyMatcapTexture(view);
+        this.applyMatcap();
       }
     }
   }
@@ -344,9 +539,15 @@ export class PBRDebugPanel {
       iblSpecular: 1.0,
       iblEnabled: true,
       matcapFactor: 1.0,
-      matcapEnabled: true,
+      matcapEnabled: false,
       debugMode: 0,
+      iblSelection: null,
+      matcapSelection: null,
+      matcapDebug: false,
     };
+    this.currentEnvironment = null;
+    this.environmentMaps = null;
+    this.currentMatcap = null;
     this.dirInputs.x.value = this.state.lightDir[0].toString();
     this.dirInputs.y.value = this.state.lightDir[1].toString();
     this.dirInputs.z.value = this.state.lightDir[2].toString();
@@ -356,8 +557,10 @@ export class PBRDebugPanel {
     this.iblDiffuseInput.value = this.state.iblDiffuse.toString();
     this.iblSpecInput.value = this.state.iblSpecular.toString();
     this.iblToggle.checked = true;
+    if (this.iblSelect) this.iblSelect.value = 'none';
     if (this.matcapInput) this.matcapInput.value = this.state.matcapFactor.toString();
     if (this.matcapToggle) this.matcapToggle.checked = this.state.matcapEnabled;
+    if (this.matcapSelect) this.matcapSelect.value = 'none';
     this.debugChecks.forEach((c) => { c.checked = false; });
     this.applyLighting();
     this.applyIBL();
@@ -411,6 +614,124 @@ export class PBRDebugPanel {
     return { label, input, wrapper };
   }
 
+  private notifyEnvironmentChange(maps: EnvironmentMaps | null) {
+    for (const cb of this.environmentListeners) cb(maps);
+  }
+
+  private getDeviceOrThrow(): GPUDevice {
+    if (!this.device) throw new Error('GPU device is not set');
+    return this.device;
+  }
+
+  private async getEnvironmentMaps(name: string): Promise<EnvironmentMaps> {
+    const cached = this.iblResolved.get(name);
+    if (cached) return cached;
+    const device = this.getDeviceOrThrow();
+    let promise = this.iblCache.get(name);
+    if (!promise) {
+      const asset = IBL_ENVIRONMENT_ASSETS.find((ibl) => ibl.name === name);
+      if (!asset) throw new Error(`Unknown IBL environment "${name}"`);
+      promise = loadEnvironmentFromHDR(device, asset.hdrUrl, { label: asset.name });
+      this.iblCache.set(name, promise);
+    }
+    const maps = await promise;
+    this.iblResolved.set(name, maps);
+    return maps;
+  }
+
+  private async selectEnvironment(name: string | null) {
+    this.state.iblSelection = name;
+    if (!name) {
+      if (this.iblSelect) this.iblSelect.value = 'none';
+      this.currentEnvironment = null;
+      this.environmentMaps = null;
+      for (const mat of this.materials) this.iblMaxMip.set(mat, 0);
+      this.applyIBL();
+      this.notifyEnvironmentChange(null);
+      return;
+    }
+    try {
+      const maps = await this.getEnvironmentMaps(name);
+      this.currentEnvironment = name;
+      this.environmentMaps = maps;
+      if (this.iblSelect) this.iblSelect.value = name;
+      this.updateEnvironmentBindings();
+      this.applyIBL();
+      this.notifyEnvironmentChange(this.environmentMaps);
+    } catch (err) {
+      console.warn('Failed to load environment', name, err);
+    }
+  }
+
+  private async getMatcapView(name: string): Promise<GPUTextureView> {
+    const existing = this.matcapResolved.get(name);
+    if (existing) return existing;
+    const device = this.getDeviceOrThrow();
+    let promise = this.matcapCache.get(name);
+    if (!promise) {
+      const asset = MATCAP_ASSETS.find((matcap) => matcap.name === name);
+      if (!asset) throw new Error(`Unknown matcap "${name}"`);
+      promise = loadTexture2D(device, asset.url);
+      this.matcapCache.set(name, promise);
+    }
+    const view = await promise;
+    this.matcapResolved.set(name, view);
+    return view;
+  }
+
+  private async selectMatcap(name: string | null) {
+    this.state.matcapSelection = name;
+    if (!name) {
+      if (this.matcapSelect) this.matcapSelect.value = 'none';
+      this.currentMatcap = null;
+      this.applyMatcap();
+      return;
+    }
+    try {
+      const view = await this.getMatcapView(name);
+      this.currentMatcap = name;
+      const shouldRaiseFactor = (this.state.matcapFactor ?? 0) < 0.001 && !this.state.matcapEnabled;
+      if (shouldRaiseFactor) {
+        this.state.matcapFactor = 1.0;
+        if (this.matcapInput) this.matcapInput.value = this.state.matcapFactor.toString();
+      }
+      this.applyMatcapTexture(view);
+      if (this.matcapToggle && !this.matcapToggle.checked) {
+        this.matcapToggle.checked = true;
+      }
+      this.state.matcapEnabled = true;
+      if (this.matcapSelect) this.matcapSelect.value = name;
+      this.applyMatcap();
+    } catch (err) {
+      console.warn('Failed to load matcap', name, err);
+    }
+  }
+
+  private applyMatcapTexture(view: GPUTextureView, targetMaterials?: ForwardPBRMaterial[]) {
+    const mats = targetMaterials ?? Array.from(this.materials);
+    for (const mat of mats) {
+      mat.setTextureBinding('tMatcap', view);
+    }
+    if (mats.length) this.flush(mats);
+  }
+
+  private updateEnvironmentBindings(targetMaterials?: ForwardPBRMaterial[]) {
+    const mats = targetMaterials ?? Array.from(this.materials);
+    if (!mats.length) return;
+    if (this.environmentMaps) {
+      for (const mat of mats) {
+        mat.setEnvironmentTextures({
+          irradiance: this.environmentMaps.diffuse.view,
+          radiance: this.environmentMaps.specular.view,
+        });
+        this.iblMaxMip.set(mat, this.environmentMaps.specular.mipLevelCount - 1);
+      }
+    } else {
+      for (const mat of mats) this.iblMaxMip.set(mat, 0);
+    }
+    this.flush(mats);
+  }
+
   private applyLighting(targetMaterials?: ForwardPBRMaterial[]) {
     const dir = normalizeVec3(this.state.lightDir);
     const intensity = this.state.dirEnabled ? this.state.dirIntensity : 0;
@@ -452,10 +773,23 @@ export class PBRDebugPanel {
     this.flush(mats);
   }
 
+  private applyMatcapDebug() {
+    const mats = Array.from(this.materials);
+    for (const mat of mats) {
+      if ((mat.uniforms as any)?.DEBUG_PARAMS !== undefined) {
+        // Use debug mode 7 for matcap debug
+        const debugMode = this.state.matcapDebug ? 7 : this.state.debugMode;
+        mat.setDebugMode(debugMode);
+      }
+    }
+    this.flush(mats);
+  }
+
   private applyDebugMode(targetMaterials?: ForwardPBRMaterial[]) {
     const mats = targetMaterials ?? Array.from(this.materials);
     for (const mat of mats) {
-      mat.setDebugMode(this.state.debugMode);
+      const debugMode = this.state.matcapDebug ? 7 : this.state.debugMode;
+      mat.setDebugMode(debugMode);
     }
     this.flush(mats);
   }

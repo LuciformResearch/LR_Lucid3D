@@ -24,7 +24,7 @@ export class BindGroupPool {
       if (r && 'buffer' in r) {
         rid = getObjectId(r.buffer);
         parts.push(`b${e.binding}:${rid}:${r.offset ?? 0}:${r.size ?? 0}`);
-      } else if (r && 'label' in r && typeof r.label === 'string') {
+      } else if (r && 'label' in r && typeof r.label === 'string' && r.label.length > 0) {
         parts.push(`l${e.binding}:${r.label}`);
       } else {
         rid = getObjectId(r);

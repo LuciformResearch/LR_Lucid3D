@@ -9,6 +9,8 @@ import { QueryArgs } from '../../components/WebgpuApp/util/query-args';
 import { DefaultTextures } from '../Abstractions/DefaultTextures';
 import { PBRDebugPanel } from './pbr_debug_panel';
 import { loadTexture2D } from '../util/texture-loader';
+import { MATCAP_ASSETS, IBL_ENVIRONMENT_ASSETS } from '../assets/asset-manifest';
+import { loadEnvironmentFromHDR, EnvironmentMaps } from '../util/environment-loader';
 
 type PrimInfo = {
   geom: AbstractDynamicGeom;
@@ -29,6 +31,18 @@ export class AbstractionGltfDemo {
   private size: [number, number];
   private skinBGCache = new WeakMap<WebgpuTransform, GPUBindGroup>();
   private useNewPipeline = false;
+  private matcapPlane: PrimInfo | null = null;
+  private matcapPlaneTr: WebgpuTransform | null = null;
+  private environmentMaps: EnvironmentMaps | null = null;
+  private skyboxPipeline: GPURenderPipeline | null = null;
+  private skyboxBindGroupLayout: GPUBindGroupLayout | null = null;
+  private skyboxBindGroup: GPUBindGroup | null = null;
+  private skyboxVertexBuffer: GPUBuffer | null = null;
+  private skyboxVertexCount = 0;
+  private skyboxUniformBuffer: GPUBuffer | null = null;
+  private skyboxSampler: GPUSampler | null = null;
+  private skyboxView = mat4.create();
+  private skyboxViewProj = mat4.create();
   constructor(private ctx: WebgpuMain, private transforms: WebgpuTransform[]) {
     this.size = [ctx.presentationSize[0], ctx.presentationSize[1]] as [number, number];
   }
@@ -37,6 +51,68 @@ export class AbstractionGltfDemo {
     // Traverse transforms, collect mesh primitives
     const stack = [...this.transforms];
     const device = this.ctx.device;
+    const useV2 = QueryArgs.getBool('absV2', false);
+    const iblEnabled = QueryArgs.getBool('iblEnable', true);
+    const iblDiffuseIntensity = (() => {
+      const val = QueryArgs.getFloat('iblDiffuse', null);
+      return val ?? 1.0;
+    })();
+    const iblSpecIntensity = (() => {
+      const val = QueryArgs.getFloat('iblSpec', null);
+      return val ?? iblDiffuseIntensity;
+    })();
+    const clearcoatFactor = QueryArgs.getFloat('clearcoat', 0.0);
+    const clearcoatRoughness = QueryArgs.getFloat('ccrough', 0.25);
+    const matcapFactorOverride = QueryArgs.getFloat('matcapFactor', null);
+    const findIblAsset = (value: string) => {
+      const lower = value.toLowerCase();
+      return IBL_ENVIRONMENT_ASSETS.find((asset) =>
+        asset.name.toLowerCase() === lower
+        || asset.label.toLowerCase() === lower
+        || asset.hdrUrl.toLowerCase().endsWith(lower)
+      );
+    };
+    const findMatcapAsset = (value: string) => {
+      const lower = value.toLowerCase();
+      return MATCAP_ASSETS.find((asset) =>
+        asset.name.toLowerCase() === lower
+        || asset.url.toLowerCase().endsWith(lower)
+      );
+    };
+    let envMaps: EnvironmentMaps | null = null;
+    if (useV2) {
+      const envArg = QueryArgs.getString('iblEnv', null);
+      if (envArg) {
+        const asset = findIblAsset(envArg);
+        if (asset) {
+          try {
+            envMaps = await loadEnvironmentFromHDR(device, asset.hdrUrl, { label: asset.name });
+            PBRDebugPanel.getInstance().registerEnvironment(asset.name, envMaps);
+          } catch (err) {
+            console.warn('Failed to load HDR environment', asset.name, err);
+          }
+        } else {
+          console.warn('Unknown IBL environment', envArg);
+        }
+      }
+    }
+    let matcapView: GPUTextureView | null = null;
+    if (useV2) {
+      const matcapArg = QueryArgs.getString('matcap', null);
+      if (matcapArg) {
+        const asset = findMatcapAsset(matcapArg);
+        if (asset) {
+          try {
+            matcapView = await loadTexture2D(device, asset.url);
+            PBRDebugPanel.getInstance().registerMatcap(asset.name, matcapView);
+          } catch (err) {
+            console.warn('Failed to load matcap texture', asset.url, err);
+          }
+        } else {
+          console.warn('Unknown matcap asset', matcapArg);
+        }
+      }
+    }
     while (stack.length) {
       const tr: any = stack.pop();
       if (!tr) continue;
@@ -51,42 +127,41 @@ export class AbstractionGltfDemo {
           if (srcMat?.normalTexture) desc.textures.normal = { view: (await srcMat.normalTexture.GetGPUTex())?.createView() };
           if (srcMat?.occlusionTexture) desc.textures.ao = { view: (await srcMat.occlusionTexture.GetGPUTex())?.createView() };
           if (srcMat?.emissiveTexture) desc.textures.emissive = { view: (await srcMat.emissiveTexture.GetGPUTex())?.createView() };
-          const useV2 = QueryArgs.getBool('absV2', false);
           if (useV2) {
             this.useNewPipeline = true;
-            const iblEnabled = QueryArgs.getBool('iblEnable', true);
-            const iblDiffuse = QueryArgs.getFloat('iblDiffuse', 1.0);
-            const iblSpec = QueryArgs.getFloat('iblSpec', iblDiffuse);
-            if (iblEnabled && (iblDiffuse > 0 || iblSpec > 0)) {
-              desc.environment = {
-                diffuse: { view: DefaultTextures.neutralEnvironmentCube(device) },
-                specular: { view: DefaultTextures.neutralEnvironmentCube(device), mipLevels: 1 },
-                brdfLut: { view: DefaultTextures.brdfLutView(device) },
-                diffuseIntensity: iblDiffuse,
-                specularIntensity: iblSpec,
-              };
+            const attachEnvironment = iblEnabled || !!envMaps;
+            if (attachEnvironment) {
+              const initialDiffuse = iblEnabled ? iblDiffuseIntensity : 0;
+              const initialSpec = iblEnabled ? iblSpecIntensity : 0;
+              const environment = envMaps
+                ? {
+                    diffuse: { view: envMaps.diffuse.view },
+                    specular: { view: envMaps.specular.view, mipLevels: envMaps.specular.mipLevelCount },
+                    brdfLut: { view: DefaultTextures.brdfLutView(device) },
+                    diffuseIntensity: initialDiffuse,
+                    specularIntensity: initialSpec,
+                  }
+                : {
+                    diffuse: { view: DefaultTextures.neutralEnvironmentCube(device) },
+                    specular: { view: DefaultTextures.neutralEnvironmentCube(device), mipLevels: 1 },
+                    brdfLut: { view: DefaultTextures.brdfLutView(device) },
+                    diffuseIntensity: initialDiffuse,
+                    specularIntensity: initialSpec,
+                  };
+              desc.environment = environment;
             }
-            const clearcoatFactor = QueryArgs.getFloat('clearcoat', 0.0);
+            desc.extensions = desc.extensions ?? {};
             if (clearcoatFactor > 0) {
-              desc.extensions = desc.extensions ?? {};
               desc.extensions.clearcoat = {
                 factor: clearcoatFactor,
-                roughness: QueryArgs.getFloat('ccrough', 0.25),
+                roughness: clearcoatRoughness,
               };
             }
-            const matcapAsset = QueryArgs.getString('matcap', null);
-            if (matcapAsset) {
-              try {
-                const matcapView = await loadTexture2D(device, `assets/textures/matcaps/${matcapAsset}`);
-                desc.extensions = desc.extensions ?? {};
-                desc.extensions.matcap = {
-                  texture: { view: matcapView },
-                  factor: QueryArgs.getFloat('matcapFactor', 1.0),
-                };
-              } catch (err) {
-                console.warn('Failed to load matcap', matcapAsset, err);
-              }
-            }
+            const matcapFactor = matcapFactorOverride ?? (matcapView ? 1.0 : 0.0);
+            desc.extensions.matcap = {
+              factor: matcapFactor,
+              ...(matcapView ? { texture: { view: matcapView } } : {}),
+            };
           }
           const material = useV2
             ? MaterialFactory2.buildForward(device, this.ctx.presentationFormat, desc)
@@ -168,8 +243,20 @@ export class AbstractionGltfDemo {
       }
     }
 
+    if (this.useNewPipeline) {
+      this.updateSkyboxEnvironment(envMaps);
+      PBRDebugPanel.getInstance().onEnvironmentChange((maps) => {
+        this.updateSkyboxEnvironment(maps);
+      });
+    }
+
     if (this.useNewPipeline && this.prims.length > 0) {
       PBRDebugPanel.getInstance().attachMaterials(this.prims.map(p => p.material));
+      // Hook matcap plane toggle to spawn/despawn a simple UV-mapped plane
+      PBRDebugPanel.getInstance().onMatcapPlaneToggle((enabled) => {
+        if (enabled) this.spawnMatcapPlane().catch(() => {});
+        else this.destroyMatcapPlane();
+      });
     }
 
     this.createDepth();
@@ -186,11 +273,309 @@ export class AbstractionGltfDemo {
     this.depthView = this.depthTex.createView();
   }
 
+  private destroyMatcapPlane() {
+    if (!this.matcapPlane) return;
+    // Remove from list and destroy buffers
+    const idx = (this.prims as any[]).indexOf(this.matcapPlane);
+    if (idx >= 0) (this.prims as any[]).splice(idx, 1);
+    try { this.matcapPlane!.vbo.destroy(); } catch {}
+    try { this.matcapPlane!.ibo?.destroy(); } catch {}
+    this.matcapPlane = null;
+    this.matcapPlaneTr = null;
+  }
+
+  private async spawnMatcapPlane() {
+    if (this.matcapPlane) return;
+    const device = this.ctx.device;
+    // Build a simple 2x2 quad in XY at Z=0 facing +Z, with UVs
+    const positions = [
+      -1, -1, 0,
+       1, -1, 0,
+       1,  1, 0,
+      -1, -1, 0,
+       1,  1, 0,
+      -1,  1, 0,
+    ];
+    const normals = [
+      0, 0, 1,  0, 0, 1,  0, 0, 1,
+      0, 0, 1,  0, 0, 1,  0, 0, 1,
+    ];
+    const uvs = [
+      0, 0,
+      1, 0,
+      1, 1,
+      0, 0,
+      1, 1,
+      0, 1,
+    ];
+    const tangents = [
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ];
+
+    // Create a dynamic geometry container with named attributes
+    const geom = new AbstractDynamicGeom({});
+    const posAttr = geom.GetAttribute<number>(AttributePlacement.POSITION, 'POSITION', 3);
+    posAttr.PushArray(positions);
+    posAttr.Count = positions.length / 3;
+    const nAttr = geom.GetAttribute<number>(AttributePlacement.NORMAL, 'NORMAL', 3);
+    nAttr.PushArray(normals);
+    nAttr.Count = normals.length / 3;
+    const uv0Attr = geom.GetAttribute<number>(AttributePlacement.TEXCOORD_0, 'TEXCOORD_0', 2);
+    uv0Attr.PushArray(uvs);
+    uv0Attr.Count = uvs.length / 2;
+    const tanAttr = geom.GetAttribute<number>(AttributePlacement.TANGENT, 'TANGENT', 4);
+    tanAttr.PushArray(tangents);
+    tanAttr.Count = tangents.length / 4;
+
+    // Map attribute names to expected locations
+    geom.SetLocations({
+      'POSITION': AttributePlacement.POSITION,
+      'NORMAL': AttributePlacement.NORMAL,
+      'TEXCOORD_0': AttributePlacement.TEXCOORD_0,
+      'TANGENT': AttributePlacement.TANGENT,
+    });
+
+    // Create a minimal PBR material with matcap enabled
+    const desc: any = { shading: 'pbr', textures: {}, scalars: { metallic: 0.0, roughness: 1.0 } };
+    desc.extensions = { matcap: { factor: 1.0 } };
+    const material = this.useNewPipeline
+      ? MaterialFactory2.buildForward(device, this.ctx.presentationFormat, desc)
+      : MaterialFactory.buildForward(device, this.ctx.presentationFormat, desc);
+
+    // Build interleaved VBO like in GLTF path
+    const byLoc: any = {};
+    for (const k in geom.byNameAttributes) {
+      const a: any = geom.byNameAttributes[k];
+      if (a.isIndices) continue; else byLoc[a.location] = a;
+    }
+    const locations = [
+      AttributePlacement.POSITION,
+      AttributePlacement.NORMAL,
+      AttributePlacement.TEXCOORD_0,
+      AttributePlacement.TANGENT,
+      AttributePlacement.TEXCOORD_1,
+      AttributePlacement.JOINTS_0,
+      AttributePlacement.WEIGHTS_0,
+    ];
+    const pos = byLoc[AttributePlacement.POSITION as number];
+    const posCount = pos ? pos.Count : 0;
+    if (!pos || posCount <= 0) return;
+    let strideBytes = 0;
+    const buffers: (Float32Array | null)[] = new Array(locations.length).fill(null);
+    const updated = { updated: false };
+    for (let i = 0; i < locations.length; i++) {
+      const ap = locations[i];
+      const comp = AttributeComponentCount[AttributePlacement[ap]] as number;
+      strideBytes += comp * 4;
+      const attr = byLoc[ap as number];
+      if (attr && !attr.isIndices) buffers[i] = attr.getArrayBuffer(updated) as Float32Array;
+    }
+    const floatsPerV = strideBytes / 4;
+    const vb = new Float32Array(posCount * floatsPerV);
+    for (let v = 0; v < posCount; v++) {
+      let off = v * floatsPerV;
+      for (let i = 0; i < locations.length; i++) {
+        const ap = locations[i];
+        const comp = AttributeComponentCount[AttributePlacement[ap]] as number;
+        const src = buffers[i];
+        if (src) {
+          const start = v * comp; for (let k = 0; k < comp; k++) vb[off + k] = src[start + k];
+        } else { for (let k = 0; k < comp; k++) vb[off + k] = 0; }
+        off += comp;
+      }
+    }
+    const vbo = device.createBuffer({ size: vb.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(vbo, 0, vb.buffer);
+
+    const tr = new WebgpuTransform();
+    tr.position.set(0, 0, 0);
+    this.matcapPlaneTr = tr;
+    const prim: PrimInfo = { geom, material, vbo, ibo: null, indexCount: 0, vertexCount: posCount, owner: tr, stride: strideBytes, indexIs32: false } as any;
+    (this.prims as any).push(prim);
+    this.matcapPlane = prim;
+
+    // Attach to debug panel so matcap texture and debug params propagate
+    PBRDebugPanel.getInstance().attachMaterials([material]);
+  }
+
+  private ensureSkyboxResources() {
+    const device = this.ctx.device;
+    if (!this.skyboxVertexBuffer) {
+      const vertices = new Float32Array([
+        -1,  1, -1,
+        -1, -1, -1,
+         1, -1, -1,
+         1,  1, -1,
+         1, -1, -1,
+        -1,  1, -1,
+
+        -1, -1,  1,
+        -1, -1, -1,
+        -1,  1, -1,
+        -1,  1, -1,
+        -1,  1,  1,
+        -1, -1,  1,
+
+         1, -1, -1,
+         1,  1,  1,
+         1,  1,  1,
+         1, -1,  1,
+         1,  1, -1,
+         1, -1, -1,
+
+        -1, -1,  1,
+        -1,  1,  1,
+         1,  1,  1,
+         1,  1,  1,
+         1, -1,  1,
+        -1, -1,  1,
+
+        -1,  1, -1,
+         1,  1, -1,
+         1,  1,  1,
+         1,  1,  1,
+        -1,  1,  1,
+        -1,  1, -1,
+
+        -1, -1, -1,
+        -1, -1,  1,
+         1, -1, -1,
+         1, -1, -1,
+        -1, -1,  1,
+         1, -1,  1,
+      ]);
+      this.skyboxVertexCount = vertices.length / 3;
+      this.skyboxVertexBuffer = device.createBuffer({
+        size: vertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(this.skyboxVertexBuffer, 0, vertices);
+    }
+    if (!this.skyboxUniformBuffer) {
+      this.skyboxUniformBuffer = device.createBuffer({
+        size: 64,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
+    if (!this.skyboxSampler) {
+      this.skyboxSampler = device.createSampler({
+        magFilter: 'linear',
+        minFilter: 'linear',
+        mipmapFilter: 'linear',
+      });
+    }
+    if (!this.skyboxBindGroupLayout) {
+      this.skyboxBindGroupLayout = device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: 'cube' } },
+        ],
+      });
+    }
+    if (!this.skyboxPipeline) {
+      const shaderModule = device.createShaderModule({
+        code: `
+struct VSOut { @builtin(position) position : vec4<f32>, @location(0) dir : vec3<f32>, };
+
+struct SkyboxUniforms { viewProj : mat4x4<f32>, };
+
+@group(0) @binding(0) var<uniform> uSky : SkyboxUniforms;
+@group(0) @binding(1) var uSampler : sampler;
+@group(0) @binding(2) var uTexture : texture_cube<f32>;
+
+@vertex
+fn vs_main(@location(0) position : vec3<f32>) -> VSOut {
+  var out : VSOut;
+  let clip = uSky.viewProj * vec4<f32>(position, 1.0);
+  out.position = vec4<f32>(clip.xy, clip.w, clip.w);
+  out.dir = position;
+  return out;
+}
+
+@fragment
+fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
+  let color = textureSampleLevel(uTexture, uSampler, normalize(in.dir), 0.0);
+  return vec4<f32>(color.rgb, 1.0);
+}
+`,
+      });
+      const pipelineLayout = device.createPipelineLayout({
+        bindGroupLayouts: [this.skyboxBindGroupLayout],
+      });
+      this.skyboxPipeline = device.createRenderPipeline({
+        layout: pipelineLayout,
+        vertex: {
+          module: shaderModule,
+          entryPoint: 'vs_main',
+          buffers: [
+            {
+              arrayStride: 12,
+              attributes: [{ shaderLocation: 0, format: 'float32x3', offset: 0 }],
+            },
+          ],
+        },
+        fragment: {
+          module: shaderModule,
+          entryPoint: 'fs_main',
+          targets: [{ format: this.ctx.presentationFormat }],
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        depthStencil: { depthWriteEnabled: false, depthCompare: 'less-equal', format: 'depth24plus' },
+      });
+    }
+  }
+
+  private updateSkyboxEnvironment(maps: EnvironmentMaps | null) {
+    if (!this.useNewPipeline) return;
+    this.environmentMaps = maps;
+    if (!maps) {
+      this.skyboxBindGroup = null;
+      return;
+    }
+    this.ensureSkyboxResources();
+    this.skyboxBindGroup = this.ctx.device.createBindGroup({
+      layout: this.skyboxBindGroupLayout!,
+      entries: [
+        { binding: 0, resource: { buffer: this.skyboxUniformBuffer! } },
+        { binding: 1, resource: this.skyboxSampler! },
+        { binding: 2, resource: maps.specular.view },
+      ],
+    });
+  }
+
+  private renderSkybox(pass: GPURenderPassEncoder, viewMatrix: mat4) {
+    if (!this.skyboxPipeline || !this.skyboxBindGroup || !this.skyboxVertexBuffer || !this.skyboxUniformBuffer) return;
+    mat4.copy(this.skyboxView, viewMatrix);
+    this.skyboxView[12] = 0;
+    this.skyboxView[13] = 0;
+    this.skyboxView[14] = 0;
+    mat4.multiply(this.skyboxViewProj, this.ctx.projectionMatrix, this.skyboxView);
+    const matrixData = this.skyboxViewProj as unknown as Float32Array;
+    this.ctx.device.queue.writeBuffer(
+      this.skyboxUniformBuffer,
+      0,
+      matrixData.buffer,
+      matrixData.byteOffset,
+      matrixData.byteLength,
+    );
+    pass.setPipeline(this.skyboxPipeline);
+    pass.setBindGroup(0, this.skyboxBindGroup);
+    pass.setVertexBuffer(0, this.skyboxVertexBuffer);
+    pass.draw(this.skyboxVertexCount);
+  }
+
   draw(commandEncoder: GPUCommandEncoder, swapView: GPUTextureView, viewProj: mat4, viewMatrix: mat4, cameraPos: [number, number, number]) {
     const pass = commandEncoder.beginRenderPass({
       colorAttachments: [{ view: swapView, clearValue: { r: 0.02, g: 0.02, b: 0.025, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
       depthStencilAttachment: { view: this.depthView!, depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
+    this.renderSkybox(pass, viewMatrix);
     for (const p of this.prims as any[]) {
       // Update model from transform
       const model = (p.owner.GetMatrixWorld().toArray() as unknown) as Float32Array;

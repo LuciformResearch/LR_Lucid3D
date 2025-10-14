@@ -37,6 +37,9 @@ export class GeneratedForwardMaterial {
 }
 
 export class ForwardPBRMaterial extends GeneratedForwardMaterial {
+  private textureEntries: GPUBindGroupEntry[] | null = null;
+  private textureLayout: GPUBindGroupLayout | null = null;
+  private textureBindingIndex = new Map<string, number>();
   constructor(device: GPUDevice, pipeline: GPURenderPipeline, bg0: GPUBindGroup, bg1: GPUBindGroup, public uniforms: UniformRecord, public pack: UniformBufferPack, ubo: UniformGPUBuffer) {
     super(device, pipeline, bg0, bg1, ubo);
   }
@@ -55,6 +58,30 @@ export class ForwardPBRMaterial extends GeneratedForwardMaterial {
   setMatcapFactor(v: number) { (this.uniforms.MATCAP_FACTOR as FloatUniform).value = v; }
   setDebugMode(mode: number) { (this.uniforms.DEBUG_PARAMS as Vector4Uniform).value = [mode, 0, 0, 0]; }
   updateUniforms() { this.ubo.update(); }
+  configureTextureBindings(layout: GPUBindGroupLayout, entries: GPUBindGroupEntry[], nameToIndex: Map<string, number>) {
+    this.textureLayout = layout;
+    this.textureEntries = entries.map((entry) => ({ ...entry }));
+    this.textureBindingIndex = new Map(nameToIndex);
+  }
+  setTextureBinding(name: string, view: GPUTextureView | null) {
+    if (!this.textureEntries || !this.textureLayout) return;
+    const idx = this.textureBindingIndex.get(name);
+    if (idx === undefined) return;
+    const entry = this.textureEntries[idx];
+    if (!entry) return;
+    this.textureEntries[idx] = { ...entry, resource: view ?? entry.resource };
+    this.bindGroup1 = BGPool.getOrCreate(this.device, this.textureLayout, this.textureEntries);
+  }
+  setEnvironmentTextures(params: {
+    irradiance?: GPUTextureView | null;
+    radiance?: GPUTextureView | null;
+    brdfLut?: GPUTextureView | null;
+  }) {
+    if (!this.textureEntries || !this.textureLayout) return;
+    if (params.irradiance) this.setTextureBinding('tIrradiance', params.irradiance);
+    if (params.radiance) this.setTextureBinding('tRadiance', params.radiance);
+    if (params.brdfLut) this.setTextureBinding('tBRDF', params.brdfLut);
+  }
 }
 
 export class MaterialFactory {
@@ -228,6 +255,7 @@ export class MaterialFactory {
 
     const bg0 = BGPool.getOrCreate(device, bgl0, [{ binding: 0, resource: { buffer: uboGPU.buffer } }]);
     const texEntries: GPUBindGroupEntry[] = [];
+    const textureBindingMap = new Map<string, number>();
     const defaultBase = DefaultTextures.whiteView(device);
     const defaultMR = DefaultTextures.whiteView(device);
     const defaultNormal = DefaultTextures.flatNormalView(device);
@@ -258,10 +286,12 @@ export class MaterialFactory {
         }
         if (!view) view = defaultBase;
         texEntries.push({ binding: binding.binding, resource: view });
+        textureBindingMap.set(binding.name, texEntries.length - 1);
       }
     }
     const bg1 = BGPool.getOrCreate(device, bgl1, texEntries);
     const mat = new ForwardPBRMaterial(device, pipeline, bg0, bg1, uniforms, pack, uboGPU);
+    mat.configureTextureBindings(bgl1, texEntries, textureBindingMap);
     (mat as any).bglSkin = bgl2;
     mat.setClearCoat(clearcoatFactor, clearcoatRoughness);
     mat.setMatcapFactor(matcapFactor);

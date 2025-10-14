@@ -50,6 +50,20 @@ struct FSIn { @location(0) vUv: vec2<f32>, @location(1) vN: vec3<f32>, @location
       let uvBC = applyUV(selectUV(in.vUv, in.vUv1, ubo.BC_UV_RS.z), ubo.BC_UV_SO, ubo.BC_UV_RS);
       let bc = textureSample(tBase, s, uvBC).rgb * ubo.BASE_COLOR_FACTOR.rgb;
       return vec4<f32>(bc, 1.0);
+    } else if (debugMode == 7.0) {
+      // Matcap debug - show matcap as sphere
+      if (HAS_MATCAP) {
+        let V = normalize(ubo.CAMERA_POS - in.vPosW);
+        let reflectDir = normalize(reflect(-V, n));
+        let viewRot = mat3x3<f32>(ubo.VIEW[0].xyz, ubo.VIEW[1].xyz, ubo.VIEW[2].xyz);
+        let rView = normalize(viewRot * reflectDir);
+        var uv = rView.xy * 0.5 + vec2<f32>(0.5, 0.5);
+        uv = clamp(uv, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+        let matcapColor = textureSample(tMatcap, s, uv).rgb;
+        return vec4<f32>(matcapColor, 1.0);
+      } else {
+        return vec4<f32>(1.0, 0.0, 1.0, 1.0); // Magenta if no matcap
+      }
     }
   }
 
