@@ -17,11 +17,13 @@
     "@webxr-input-profiles/assets": "^1.0.9",
     "@webxr-input-profiles/motion-controllers": "^1.0.0",
     "browser-sync": "^2.29.3",
+    "dat.gui": "^0.7.9",
     "earcut": "^2.2.4",
     "gl-matrix": "^3.4.3",
     "typescript": "^5.0.4",
     "webxr": "0.0.0",
-    "webxr-polyfill": "^2.0.3"
+    "webxr-polyfill": "^2.0.3",
+    "wgpu-matrix": "^3.4.0"
   },
   "devDependencies": {
     "@types/node": "^20.2.3",

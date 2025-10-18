@@ -6,6 +6,7 @@ import {WebgpuMain} from "../WebgpuMain";
 import {WebgpuSkin} from "../WebgpuSkin";
 import { QueryArgs } from "../../components/WebgpuApp/util/query-args";
 import {UniqueIDHelper} from "../Typescript/UniqueIDHelper";
+import { FORWARD_GEOM_LAYOUT, getCachedPrim, layoutStride, storeCachedPrim } from '../util/prim-cache';
 
 let basicVertWGSL = require('./shaders/research/vertex.wgsl').default;
 let sampleTextureMixColorWGSL = require('./shaders/research/fragment.wgsl').default;
@@ -31,6 +32,7 @@ export class WebgpuMaterial
 	bySkinBindGroup: {[index: string] : GPUBindGroup} = {};
     private dummySkinBuffer: GPUBuffer | null = null;
     private dummySkinBindGroup: GPUBindGroup | null = null;
+	private traceCache: boolean = QueryArgs.getBool('tracecache', false);
 
 	constructor(public readonly renderer: WebgpuMain, options?: {baseColorTexture?: WebgpuTexture, metallicRoughnessTexture?: WebgpuTexture, normalTexture?: WebgpuTexture, occlusionTexture?: WebgpuTexture, emissiveTexture?: WebgpuTexture})
 	{
@@ -60,12 +62,11 @@ export class WebgpuMaterial
 			TANGENT = 4,
 	
 	*/
-	async initialize()
-	{
-		let defaultAttributes = [AttributePlacement.POSITION, AttributePlacement.NORMAL,
-		AttributePlacement.TANGENT, AttributePlacement.COLOR, AttributePlacement.TEXCOORD_0,
-		AttributePlacement.TEXCOORD_1, AttributePlacement.JOINTS_0, AttributePlacement.WEIGHTS_0, AttributePlacement.JOINTS_1, AttributePlacement.WEIGHTS_1];
-		this.locations = defaultAttributes;
+    async initialize()
+    {
+        const shaderLog = QueryArgs.getBool('shaderLog', false);
+        const defaultAttributes = FORWARD_GEOM_LAYOUT;
+        this.locations = defaultAttributes;
 
 		// 		let test =  /* wgsl */`
 		// 		const testVar: f32 = 55;
@@ -106,7 +107,11 @@ export class WebgpuMaterial
 
 		// Create a vertex buffer from the cube data.
 		// pipeline c'est un genre de material
-		this.pipeline = this.renderer.device.createRenderPipeline({
+        if (shaderLog) {
+            console.log('[Forward][shader] material vertex', basicVertWGSL);
+            console.log('[Forward][shader] material fragment', sampleTextureMixColorWGSL);
+        }
+        this.pipeline = this.renderer.device.createRenderPipeline({
 
 			layout: 'auto',
 			vertex: {
@@ -243,175 +248,203 @@ export class WebgpuMaterial
 
 		drawGeometry(modelViewProjectionMatrix: mat4, passEncoder: GPURenderPassEncoder, geom: AbstractDynamicGeom, tr?: WebgpuTransform)
 		{
-		/**
-			  le material demande à la géométrie de construire des buffers qui lui sont relatif,
-
-		 */
-		let locationsNeeded = this.locations;
-		let byLocationAttr: {[index: number]: AbstractDynamicAttributeBase} = {};
-		let indexAttr: AbstractDynamicAttributeBase = undefined;
-		let finalBuffers: GPUBuffer[] = [];
-		let indexBuffer: GPUBuffer = undefined;
-		let indexCount: number = -1;
-		let posCount: number = -1;
-		for(let key in geom.byNameAttributes)
-		{
-			let attribute = geom.byNameAttributes[key];
-			if(attribute.isIndices)
+			const locationsNeeded = this.locations;
+			const byLocationAttr: {[index: number]: AbstractDynamicAttributeBase} = {};
+			let indexAttr: AbstractDynamicAttributeBase = undefined;
+			for (let key in geom.byNameAttributes)
 			{
-				indexAttr = attribute;
+				let attribute = geom.byNameAttributes[key];
+				if (attribute.isIndices)
+				{
+					indexAttr = attribute;
+				}
+				else
+				{
+					byLocationAttr[attribute.location] = attribute;
+				}
 			}
-			else
+
+			let posCount: number = 0;
+			const positionAttr = byLocationAttr[AttributePlacement.POSITION as number];
+			if (positionAttr)
 			{
-				byLocationAttr[attribute.location] = attribute;
+				posCount = positionAttr.Count;
 			}
-		}
+			if (!positionAttr || posCount <= 0)
+			{
+				return;
+			}
 
-		let offset = 0;
+			const arrayStride = layoutStride(locationsNeeded);
+			const indexFormat: GPUIndexFormat | null = indexAttr ? 'uint16' : null;
 
-			let buffers: (TypedArray | null)[] = new Array(locationsNeeded.length).fill(null);
-
-		let updated: {updated: boolean} = {updated : false};
-		for(let i = 0; i < locationsNeeded.length; i++)
-		{
-			let attributePlacement = locationsNeeded[i];
-			let location = attributePlacement as number;
-			let attribute = byLocationAttr[location];
-			let attrName = AttributePlacement[attributePlacement];
-			let componentCount = AttributeComponentCount[attrName] as number;
-			let type = AttributeType[attrName] as string;
-			// add to buffer here?
-                if(attribute && !attribute.isIndices)
-                {
-                    if (i == 0)
-                    {
-                        posCount = attribute.Count;
-                    }
+			const buffers: (TypedArray | null)[] = new Array(locationsNeeded.length).fill(null);
+			const updated: {updated: boolean} = {updated: false};
+			for (let i = 0; i < locationsNeeded.length; i++)
+			{
+				const attributePlacement = locationsNeeded[i];
+				const location = attributePlacement as number;
+				const attribute = byLocationAttr[location];
+				if (attribute && !attribute.isIndices)
+				{
+					if (i === 0)
+					{
+						posCount = attribute.Count;
+					}
 					buffers[i] = attribute.getArrayBuffer(updated);
-                    finalBuffers.push(attribute.getWebgpuBuffer(this));
-                }
+				}
+			}
 
-			
+			let cached = getCachedPrim(geom, locationsNeeded, indexFormat);
+			const strideChanged = cached ? cached.arrayStride !== arrayStride : false;
+			const countChanged = cached ? cached.vertexCount !== posCount : false;
+			const needsUpload = updated.updated || !cached || strideChanged || countChanged;
+			if (this.traceCache) {
+				const cacheLabel = (geom as any)?.debugName || (geom as any)?.name || (geom as any)?.id || '';
+				if (needsUpload) {
+					const reason = !cached ? 'cold' : strideChanged ? 'stride' : countChanged ? 'count' : 'data';
+					console.log('[ForwardCache] rebuild', { label: cacheLabel, reason, posCount, arrayStride });
+				} else if (cached) {
+					console.log('[ForwardCache] reuse', { label: cacheLabel, posCount: cached.vertexCount, stride: cached.arrayStride });
+				}
+			}
 
-			offset += Float32Array.BYTES_PER_ELEMENT * componentCount;
+			let vertexBuffer = cached?.vbo ?? null;
+			if (needsUpload)
+			{
+				const allocateNew = !cached || strideChanged || countChanged;
+				const bufferSize = Math.max(0, posCount) * arrayStride;
+				const targetBuffer = allocateNew
+					? this.renderer.device.createBuffer({ usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST, size: bufferSize })
+					: cached!.vbo;
 
+				const floatsPerVertex = arrayStride / Float32Array.BYTES_PER_ELEMENT;
+				const vb = new Float32Array(posCount * floatsPerVertex);
 
-
-		}
-		// Ensure big vertex buffer has correct size for current geometry
-		const arrayStride: number = offset;
-		const requiredSize = Math.max(0, posCount) * arrayStride;
-		const needRebuildVB = (!this.bigVertexBuffer) || (this.bigVertexBuffer.size !== requiredSize) || updated.updated || this.cachedStride !== arrayStride || this.cachedPosCount !== posCount;
-		if (needRebuildVB) {
-			// Do not destroy an in-use buffer; allocate a new one and keep the old alive until GPU is done
-			this.bigVertexBuffer = this.renderer.device.createBuffer({ usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST, size: requiredSize });
-			this.cachedStride = arrayStride;
-			this.cachedPosCount = posCount;
-			updated.updated = true;
-		}
-		
-		if (updated.updated)
-		{
-				let vertexIndex = 0;
-
-				// Debug/toggles
 				const only4 = QueryArgs.getBool('only4', false);
-				// Prepare zero arrays for JOINTS_1 / WEIGHTS_1 if only4
-				let zeroJ1: Float32Array | null = null;
-				let zeroW1: Float32Array | null = null;
-				if (only4) {
+				if (only4)
+				{
 					const j1Loc = AttributePlacement.JOINTS_1 as number;
 					const w1Loc = AttributePlacement.WEIGHTS_1 as number;
-					zeroJ1 = new Float32Array(posCount * AttributeComponentCount[AttributePlacement[AttributePlacement.JOINTS_1]]);
-					zeroW1 = new Float32Array(posCount * AttributeComponentCount[AttributePlacement[AttributePlacement.WEIGHTS_1]]);
+					const zeroJ1 = new Float32Array(posCount * AttributeComponentCount[AttributePlacement[AttributePlacement.JOINTS_1]]);
+					const zeroW1 = new Float32Array(posCount * AttributeComponentCount[AttributePlacement[AttributePlacement.WEIGHTS_1]]);
 					buffers[j1Loc] = zeroJ1;
 					buffers[w1Loc] = zeroW1;
 				}
 
-				// One-time debug log for first vertex
-				if ((window as any)._dbg_logged !== true) {
+				if ((window as any)._dbg_logged !== true)
+				{
 					const j0 = buffers[AttributePlacement.JOINTS_0 as number] as Float32Array;
 					const w0 = buffers[AttributePlacement.WEIGHTS_0 as number] as Float32Array;
 					const j1 = buffers[AttributePlacement.JOINTS_1 as number] as Float32Array;
 					const w1 = buffers[AttributePlacement.WEIGHTS_1 as number] as Float32Array;
-					if (j0 && w0) {
+					if (j0 && w0)
+					{
 						const v = 0;
-						console.log('[SKIN DEBUG] v0 j0=', Array.from(j0.slice(v*4, v*4+4)), ' w0=', Array.from(w0.slice(v*4, v*4+4)));
-						if (j1 && w1) console.log('[SKIN DEBUG] v0 j1=', Array.from(j1.slice(v*4, v*4+4)), ' w1=', Array.from(w1.slice(v*4, v*4+4)));
+						console.log('[SKIN DEBUG] v0 j0=', Array.from(j0.slice(v * 4, v * 4 + 4)), ' w0=', Array.from(w0.slice(v * 4, v * 4 + 4)));
+						if (j1 && w1) console.log('[SKIN DEBUG] v0 j1=', Array.from(j1.slice(v * 4, v * 4 + 4)), ' w1=', Array.from(w1.slice(v * 4, v * 4 + 4)));
 					}
 					(window as any)._dbg_logged = true;
 				}
-	
-			for(vertexIndex = 0; vertexIndex < posCount; vertexIndex++)
-			{
-				let offset = 0;
-				for(let i = 0; i < locationsNeeded.length; i++)
+
+				for (let vertexIndex = 0; vertexIndex < posCount; vertexIndex++)
 				{
-					let attributePlacement = locationsNeeded[i];
-					let location = attributePlacement as number;
-					let attribute = byLocationAttr[location];
-					let attrName = AttributePlacement[attributePlacement];
-					let componentCount = AttributeComponentCount[attrName] as number;
-                    if (attribute)
-                    {
-						let src = buffers[i]!;
-						this.renderer.device.queue.writeBuffer(
-							this.bigVertexBuffer,
-							vertexIndex * arrayStride + offset,
-							(src as TypedArray).buffer,
-							vertexIndex * (src as TypedArray).BYTES_PER_ELEMENT * componentCount,
-							(src as TypedArray).BYTES_PER_ELEMENT * componentCount
-						);
-                    }
-					offset += Float32Array.BYTES_PER_ELEMENT * componentCount;
+					let writeOffset = vertexIndex * floatsPerVertex;
+					for (let i = 0; i < locationsNeeded.length; i++)
+					{
+						const attributePlacement = locationsNeeded[i];
+						const attrName = AttributePlacement[attributePlacement];
+						const componentCount = AttributeComponentCount[attrName] as number;
+						const src = buffers[i];
+						if (src)
+						{
+							const start = vertexIndex * componentCount;
+							for (let k = 0; k < componentCount; k++)
+							{
+								vb[writeOffset + k] = (src as TypedArray)[start + k] as number;
+							}
+						}
+						else
+						{
+							for (let k = 0; k < componentCount; k++)
+							{
+								vb[writeOffset + k] = 0;
+							}
+						}
+						writeOffset += componentCount;
+					}
 				}
+
+				this.renderer.device.queue.writeBuffer(targetBuffer, 0, vb.buffer, 0, vb.byteLength);
+				vertexBuffer = targetBuffer;
+				cached = undefined;
+			}
+			else if (cached)
+			{
+				vertexBuffer = cached.vbo;
+			}
+
+			if (!vertexBuffer)
+			{
+				return;
+			}
+
+			const indexBuffer = indexAttr ? indexAttr.getWebgpuBuffer(this) : undefined;
+			const indexCount = indexAttr ? indexAttr.Count : 0;
+
+			storeCachedPrim(geom, locationsNeeded, indexFormat, {
+				vbo: vertexBuffer,
+				ibo: indexBuffer ?? null,
+				indexCount,
+				vertexCount: posCount,
+				arrayStride,
+				indexFormat,
+			});
+
+			this.bigVertexBuffer = vertexBuffer;
+			this.cachedStride = arrayStride;
+			this.cachedPosCount = posCount;
+
+			if(this.ready)
+			{
+				const transformationMatrix = modelViewProjectionMatrix as Float32Array;
+				this.renderer.device.queue.writeBuffer(
+					this.uniformBuffer,
+					0,
+					transformationMatrix.buffer,
+					transformationMatrix.byteOffset,
+					transformationMatrix.byteLength
+				);
+			}
+
+			const noSkin = QueryArgs.getBool('noskin', false);
+			const hasRealSkin = (!!tr && (tr as any).mesh && (tr as any).mesh.skin && (tr as any).mesh.skin.joints && (tr as any).mesh.skin.joints.length > 0);
+			if (!noSkin && hasRealSkin && tr && tr.skinBuffer) {
+				const skinUUID = UniqueIDHelper.GetUUID(tr as any);
+				if (!this.bySkinBindGroup[skinUUID]) {
+					this.bySkinBindGroup[skinUUID] = this.renderer.device.createBindGroup({
+						layout: this.pipeline.getBindGroupLayout(2),
+						entries: [
+							{ binding: 0, resource: { buffer: tr.skinBuffer } }
+						]
+					});
+				}
+				passEncoder.setBindGroup(2, this.bySkinBindGroup[skinUUID]);
+			} else {
+				this.ensureDummySkinBindGroup();
+				passEncoder.setBindGroup(2, this.dummySkinBindGroup);
+			}
+
+			if(indexAttr && indexBuffer)
+			{
+				this.drawIndexed(passEncoder, [vertexBuffer], indexBuffer, indexCount, indexFormat ?? 'uint16');
+			}
+			else
+			{
+				this.draw(passEncoder, [vertexBuffer], posCount);
 			}
 		}
-
-		if(this.ready)
-		{
-			const transformationMatrix = modelViewProjectionMatrix as Float32Array;// this.getTransformationMatrix(this.renderer.projectionMatrix);
-			this.renderer.device.queue.writeBuffer(
-				this.uniformBuffer,
-				0,
-				transformationMatrix.buffer,
-				transformationMatrix.byteOffset,
-				transformationMatrix.byteLength
-			);
-		}
-		
-		// If a skinning buffer exists for this transform and not disabled by noskin, bind it at group 2
-		const noSkin = QueryArgs.getBool('noskin', false);
-		const hasRealSkin = (!!tr && (tr as any).mesh && (tr as any).mesh.skin && (tr as any).mesh.skin.joints && (tr as any).mesh.skin.joints.length > 0);
-		if (!noSkin && hasRealSkin && tr && tr.skinBuffer) {
-			const skinUUID = UniqueIDHelper.GetUUID(tr as any);
-			if (!this.bySkinBindGroup[skinUUID]) {
-				this.bySkinBindGroup[skinUUID] = this.renderer.device.createBindGroup({
-					layout: this.pipeline.getBindGroupLayout(2),
-					entries: [
-						{ binding: 0, resource: { buffer: tr.skinBuffer } }
-					]
-				});
-			}
-			passEncoder.setBindGroup(2, this.bySkinBindGroup[skinUUID]);
-		} else {
-            // Always bind a valid group(2); with noskin=1 or missing skin, bind dummy buffer with useSkinning=0
-            this.ensureDummySkinBindGroup();
-            passEncoder.setBindGroup(2, this.dummySkinBindGroup);
-        }
-
-		if(indexAttr)
-		{
-			indexBuffer = indexAttr.getWebgpuBuffer(this);
-			indexCount = indexAttr.Count;
-			this.drawIndexed(passEncoder, [this.bigVertexBuffer], indexBuffer, indexCount);
-		}
-		else
-		{
-			this.draw(passEncoder, [this.bigVertexBuffer], posCount);
-		}
-	}
-	drawIndexed(passEncoder: GPURenderPassEncoder, vertexBuffers: GPUBuffer[], indexBuffer: GPUBuffer, indexCount: number)
+	drawIndexed(passEncoder: GPURenderPassEncoder, vertexBuffers: GPUBuffer[], indexBuffer: GPUBuffer, indexCount: number, indexFormat: GPUIndexFormat)
 	{
 		if(this.ready)
 		{
@@ -421,7 +454,7 @@ export class WebgpuMaterial
 			{
 				passEncoder.setVertexBuffer(i, vertexBuffers[i]);
 			}
-			passEncoder.setIndexBuffer(indexBuffer, "uint16");
+			passEncoder.setIndexBuffer(indexBuffer, indexFormat);
 			passEncoder.drawIndexed(indexCount, 1, 0, 0);
 		}
 	}

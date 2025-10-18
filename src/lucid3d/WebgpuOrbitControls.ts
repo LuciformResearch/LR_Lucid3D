@@ -1,9 +1,8 @@
-import { quat } from "gl-matrix";
+
 import { input, KeyCode, MouseButton } from "./Input";
 import { MathHelper } from "./Math/MathHelper";
 import { Matrix4 } from "./Math/Matrix4";
 import { Quaternion } from "./Math/Quaternion";
-import { Vector2 } from "./Math/Vector2";
 import { Vector3 } from "./Math/Vector3";
 import { WebgpuTransform } from "./WebgpuTransform";
 

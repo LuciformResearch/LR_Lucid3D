@@ -61,7 +61,34 @@ var inited = false;
 
 export function initWebgpuTest()
 {
-    
+    const rawSampleFlag = QueryArgs.getBool('deferredSampleRaw', false);
+    if (rawSampleFlag) {
+        document.body.innerHTML = '';
+        const style = document.createElement('style');
+        style.textContent = `
+        html, body {
+            margin: 0;
+            height: 100%;
+            background: #000;
+        }
+        body {
+            display: flex;
+        }
+        canvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }`;
+        document.head.appendChild(style);
+        const canvas = document.createElement('canvas');
+        document.body.appendChild(canvas);
+        import(/* webpackMode: "eager" */ '../../lucid3d/Deferred/FromWebgpuSamples/deferredRendering/main')
+            .catch((err) => {
+                console.error('[DeferredSample] failed to load sample', err);
+            });
+        return;
+    }
+
     let webgpuCanvas = document.createElement('canvas');
     webgpuCanvas.style.width = "" + window.innerWidth + "px";
     webgpuCanvas.style.height = "" + window.innerHeight + "px";

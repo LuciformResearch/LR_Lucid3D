@@ -5,6 +5,7 @@ import { AbstractDynamicGeom, AttributeComponentCount, AttributePlacement, Attri
 import { WebgpuTransform } from '../WebgpuTransform';
 import { TypedArray, WebgpuTexture } from '../Loaders/GLTF2WGPU2';
 import { Metrics } from '../util/metrics';
+import { FORWARD_GEOM_LAYOUT, getCachedPrim, layoutStride, storeCachedPrim } from '../util/prim-cache';
 
 let vertWGSL = require('./shaders/gbuffer_geometry.vert.wgsl').default;
 let fragWGSL = require('./shaders/gbuffer_geometry.frag.wgsl').default;
@@ -20,6 +21,7 @@ export class WebgpuGBufferMaterial {
   ready: Promise<void>;
   private trace: boolean = false;
   private onlyPosNormUv: boolean = false;
+  private traceCache: boolean = QueryArgs.getBool('tracecache', false);
   private cachedStride: number = 0;
   private cachedPosCount: number = 0;
   baseColorTexture?: WebgpuTexture;
@@ -31,8 +33,8 @@ export class WebgpuGBufferMaterial {
   private bySkinBindGroup: { [index: string]: GPUBindGroup } = {};
   private dummySkinBuffer: GPUBuffer | null = null;
   private dummySkinBindGroup: GPUBindGroup | null = null;
-  
-  // Texture availability flags for debugging
+  private cacheDisabledLogged = new WeakSet<AbstractDynamicGeom>();
+
   get textureFlags() {
     return {
       hasBaseTexture: !!this.baseColorTexture,
@@ -42,7 +44,7 @@ export class WebgpuGBufferMaterial {
       hasEmissiveTexture: !!this.emissiveTexture,
     };
   }
-
+  
   constructor(private renderer: WebgpuMain, options?: { baseColorTexture?: WebgpuTexture, metallicRoughnessTexture?: WebgpuTexture, occlusionTexture?: WebgpuTexture, emissiveTexture?: WebgpuTexture, normalTexture?: WebgpuTexture, formats?: GPUTextureFormat[], sampleCount?: number }) {
     if (options?.baseColorTexture) this.baseColorTexture = options.baseColorTexture;
     if (options?.metallicRoughnessTexture) this.metallicRoughnessTexture = options.metallicRoughnessTexture;
@@ -56,16 +58,7 @@ export class WebgpuGBufferMaterial {
 
   private async initialize(options?: { formats?: GPUTextureFormat[], sampleCount?: number }) {
     // Only include attributes required by GBuffer shaders
-    const defaultAttributes: AttributePlacement[] = [
-      AttributePlacement.POSITION,
-      AttributePlacement.NORMAL,
-      AttributePlacement.TANGENT,
-      AttributePlacement.TEXCOORD_0,
-      AttributePlacement.JOINTS_0,
-      AttributePlacement.WEIGHTS_0,
-      AttributePlacement.JOINTS_1,
-      AttributePlacement.WEIGHTS_1,
-    ];
+    const defaultAttributes: AttributePlacement[] = FORWARD_GEOM_LAYOUT;
     this.locations = defaultAttributes;
 
     let arrayStride = 0;
@@ -89,17 +82,13 @@ export class WebgpuGBufferMaterial {
     // Choose fragment shader variant based on target count (2 or 3)
     const targetCount = formats.length;
     let fragModuleCode = fragWGSL as string;
+    const shaderLog = QueryArgs.getBool('shaderLog', false);
     if (targetCount === 2) {
       fragModuleCode = `
       struct Uniforms {
         mvp : mat4x4<f32>,
         model : mat4x4<f32>,
         normal : mat4x4<f32>,
-        hasBaseTexture : f32,
-        hasMRTexture : f32,
-        hasNormalTexture : f32,
-        hasAOTexture : f32,
-        hasEmissiveTexture : f32,
       };
       @group(0) @binding(0) var<uniform> uniforms : Uniforms;
       @group(1) @binding(0) var baseSampler: sampler;
@@ -139,19 +128,14 @@ export class WebgpuGBufferMaterial {
       @fragment
       fn main(in: FSIn) -> FragOut {
         let uv = in.uv0;
-        var albedo = vec4<f32>(1.0, 1.0, 1.0, 1.0);
-        if (uniforms.hasBaseTexture > 0.5) { albedo = textureSample(baseTexture, baseSampler, uv); }
-        var metallic = 0.0;
-        var roughness = 1.0;
-        if (uniforms.hasMRTexture > 0.5) {
-          let mr = textureSample(mrTexture, mrSampler, uv);
-          metallic = mr.b; roughness = mr.g;
-        }
+        let albedo = textureSample(baseTexture, baseSampler, uv);
+        let mr = textureSample(mrTexture, mrSampler, uv);
+        let metallic = mr.b;
+        let roughness = mr.g;
         let nW = normalize(in.normalW);
         var n = nW;
         let tLen = length(in.tangentW);
-        let hasNormalTex = uniforms.hasNormalTexture > 0.5;
-        if (tLen > 1e-5 && hasNormalTex) {
+        if (tLen > 1e-5) {
           let nTex = textureSampleLevel(normalTexture, normalSampler, uv, 0.0).xyz;
           let nTexDecoded = 2.0 * nTex - vec3<f32>(1.0, 1.0, 1.0);
           let tbn = mat3x3<f32>(normalize(in.tangentW), normalize(in.bitangentW), nW);
@@ -163,6 +147,10 @@ export class WebgpuGBufferMaterial {
         out.g1 = vec4<f32>(enc, roughness, 1.0);
         return out;
       }`;
+    }
+
+    if (shaderLog) {
+      console.log('[Deferred][shader] gbuffer fragment', fragModuleCode);
     }
 
     this.pipeline = device.createRenderPipeline({
@@ -178,7 +166,7 @@ export class WebgpuGBufferMaterial {
       multisample: { count: sampleCount },
     });
 
-    // 3 mat4x4 (mvp, model, normal) + 5 floats (texture flags) = 192 + 32 = 224 bytes (aligned to 16-byte boundary)
+    // 3 mat4x4 (mvp, model, normal) padded to 224 bytes to match bind group expectations
     this.uniformBuffer = device.createBuffer({ size: 64 * 3 + 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', mipmapFilter: 'nearest' });
@@ -273,19 +261,23 @@ export class WebgpuGBufferMaterial {
       return;
     }
 
-    // Prepare per-location float buffers
+    const arrayStride = layoutStride(locationsNeeded);
+    const indexFormat: GPUIndexFormat | null = indexAttr ? 'uint16' : null;
+    const allowCache = !this.onlyPosNormUv;
+    const cachedInfo = allowCache ? getCachedPrim(geom, locationsNeeded, indexFormat) : undefined;
+    if (!allowCache && this.traceCache && !this.cacheDisabledLogged.has(geom)) {
+      this.cacheDisabledLogged.add(geom);
+      const label = (geom as any)?.debugName || (geom as any)?.name || (geom as any)?.id || '';
+      console.log('[DeferredCache] disabled', { label, reason: 'onlyPosNormUv' });
+    }
+
     const buffers: (TypedArray | null)[] = new Array(locationsNeeded.length).fill(null);
-    let arrayStride = 0;
     const updated: { updated: boolean } = { updated: false };
     for (let i = 0; i < locationsNeeded.length; i++) {
       const ap = locationsNeeded[i];
       const loc = ap as number;
-      const name = AttributePlacement[ap];
-      const comp = AttributeComponentCount[name] as number;
-      arrayStride += Float32Array.BYTES_PER_ELEMENT * comp;
       const attr = byLocationAttr[loc];
       if (attr && !attr.isIndices) {
-        // Use same approach as forward material
         buffers[i] = attr.getArrayBuffer(updated) as TypedArray;
       }
     }
@@ -296,43 +288,76 @@ export class WebgpuGBufferMaterial {
         arrayStride,
         hasIndex: !!indexAttr,
         posLen: posAttrDbg ? posAttrDbg.value?.length : 0,
+        reusedCache: !!cachedInfo,
       });
     }
-    const needRebuild = (!this.bigVertexBuffer || this.bigVertexBuffer.size !== posCount * arrayStride || updated.updated || this.cachedStride !== arrayStride || this.cachedPosCount !== posCount);
-    if (needRebuild) {
-      // Do not destroy in-use buffer this frame; allocate a fresh one
-      this.bigVertexBuffer = this.renderer.device.createBuffer({ size: posCount * arrayStride, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-      if (Metrics.isEnabled()) Metrics.incBuffers(1);
-      // Build interleaved CPU buffer once, then a single writeBuffer
-      const floatsPerVertex = arrayStride / Float32Array.BYTES_PER_ELEMENT;
-      const vb = new Float32Array(posCount * floatsPerVertex);
-      for (let v = 0; v < posCount; v++) {
-        let fOffset = v * floatsPerVertex;
-        for (let i = 0; i < locationsNeeded.length; i++) {
-          const ap = locationsNeeded[i];
-          const name = AttributePlacement[ap];
-          const comp = AttributeComponentCount[name] as number;
-          const src = buffers[i] as any;
-          if (src) {
-            const start = v * comp;
-            for (let k = 0; k < comp; k++) {
-              vb[fOffset + k] = src[start + k];
-            }
-          } else {
-            // Fill zeros if attribute missing
-            for (let k = 0; k < comp; k++) vb[fOffset + k] = 0.0;
-          }
-          if (this.trace && v === 0) {
-            const vals = src ? Array.from(src.slice(0, comp)) : new Array(comp).fill(0);
-            console.log('[GBufferMaterial] First vertex slice', { attr: name, comp, values: vals });
-          }
-          fOffset += comp;
-        }
+    const existingBuffer = cachedInfo?.vbo ?? this.bigVertexBuffer;
+    const strideMismatch = cachedInfo ? cachedInfo.arrayStride !== arrayStride : (this.cachedStride !== arrayStride);
+    const countMismatch = cachedInfo ? cachedInfo.vertexCount !== posCount : (this.cachedPosCount !== posCount);
+    const needRebuild = !existingBuffer || updated.updated || strideMismatch || countMismatch;
+    if (this.traceCache && allowCache) {
+      const label = (geom as any)?.debugName || (geom as any)?.name || (geom as any)?.id || '';
+      if (needRebuild) {
+        const reason = !cachedInfo ? (!existingBuffer ? 'cold' : (updated.updated ? 'data' : 'layout')) : strideMismatch ? 'stride' : countMismatch ? 'count' : 'data';
+        console.log('[DeferredCache] rebuild', { label, reason, posCount, arrayStride });
+      } else if (cachedInfo) {
+        console.log('[DeferredCache] reuse', { label, posCount: cachedInfo.vertexCount, stride: cachedInfo.arrayStride });
       }
-      this.renderer.device.queue.writeBuffer(this.bigVertexBuffer, 0, vb.buffer, 0, vb.byteLength);
-      if (Metrics.isEnabled()) Metrics.addWrite(vb.byteLength);
-      this.cachedStride = arrayStride;
-      this.cachedPosCount = posCount;
+    }
+    let targetBuffer = existingBuffer;
+    if (needRebuild) {
+      const allocateNew = !existingBuffer || strideMismatch || countMismatch;
+      if (allocateNew) {
+        targetBuffer = this.renderer.device.createBuffer({ size: posCount * arrayStride, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+        if (Metrics.isEnabled()) Metrics.incBuffers(1);
+      }
+      if (targetBuffer) {
+        const floatsPerVertex = arrayStride / Float32Array.BYTES_PER_ELEMENT;
+        const vb = new Float32Array(posCount * floatsPerVertex);
+        for (let v = 0; v < posCount; v++) {
+          let fOffset = v * floatsPerVertex;
+          for (let i = 0; i < locationsNeeded.length; i++) {
+            const ap = locationsNeeded[i];
+            const name = AttributePlacement[ap];
+            const comp = AttributeComponentCount[name] as number;
+            const src = buffers[i] as any;
+            if (src) {
+              const start = v * comp;
+              for (let k = 0; k < comp; k++) {
+                vb[fOffset + k] = src[start + k];
+              }
+            } else {
+              for (let k = 0; k < comp; k++) vb[fOffset + k] = 0.0;
+            }
+            if (this.trace && v === 0) {
+              const vals = src ? Array.from(src.slice(0, comp)) : new Array(comp).fill(0);
+              console.log('[GBufferMaterial] First vertex slice', { attr: name, comp, values: vals });
+            }
+            fOffset += comp;
+          }
+        }
+        this.renderer.device.queue.writeBuffer(targetBuffer, 0, vb.buffer, 0, vb.byteLength);
+        if (Metrics.isEnabled()) Metrics.addWrite(vb.byteLength);
+      }
+    }
+    if (!targetBuffer) {
+      return;
+    }
+    this.bigVertexBuffer = targetBuffer;
+    this.cachedStride = arrayStride;
+    this.cachedPosCount = posCount;
+
+    const indexBuffer: GPUBuffer | null = indexAttr ? indexAttr.getWebgpuBuffer(this) : null;
+    const indexCount = indexAttr ? indexAttr.Count : 0;
+    if (allowCache) {
+      storeCachedPrim(geom, locationsNeeded, indexFormat, {
+        vbo: this.bigVertexBuffer,
+        ibo: indexBuffer,
+        indexCount,
+        vertexCount: posCount,
+        arrayStride,
+        indexFormat,
+      });
     }
 
     // Write MVP, Model, Normal, and texture flags in a single upload (224 bytes)
@@ -344,17 +369,11 @@ export class WebgpuGBufferMaterial {
     const mdlArr = (mdl instanceof Float32Array) ? mdl : Float32Array.from(mdl as unknown as number[]);
     const nrmArr = (nrm instanceof Float32Array) ? nrm : Float32Array.from(nrm as unknown as number[]);
 
-    // 3*16 floats for matrices + 8 floats for flags/padding = 56 floats (224 bytes)
+    // 3*16 floats for matrices + padding
     const packed = new Float32Array(16 * 3 + 8);
     packed.set(mArr, 0);
     packed.set(mdlArr, 16);
     packed.set(nrmArr, 32);
-    packed[48] = this.baseColorTexture ? 1.0 : 0.0;
-    packed[49] = this.metallicRoughnessTexture ? 1.0 : 0.0;
-    packed[50] = this.normalTexture ? 1.0 : 0.0;
-    packed[51] = this.occlusionTexture ? 1.0 : 0.0;
-    packed[52] = this.emissiveTexture ? 1.0 : 0.0;
-    // remaining 3 floats left as 0 for alignment
     q.writeBuffer(this.uniformBuffer, 0, packed.buffer, 0, packed.byteLength);
     if (Metrics.isEnabled()) Metrics.addWrite(packed.byteLength);
     if (this.trace) {
@@ -395,10 +414,9 @@ export class WebgpuGBufferMaterial {
       passEncoder.setBindGroup(2, this.dummySkinBindGroup);
     }
     passEncoder.setVertexBuffer(0, this.bigVertexBuffer);
-    if (indexAttr) {
-      const ib = indexAttr.getWebgpuBuffer(this);
-      passEncoder.setIndexBuffer(ib, 'uint16');
-      passEncoder.drawIndexed(indexAttr.Count, 1, 0, 0);
+    if (indexBuffer) {
+      passEncoder.setIndexBuffer(indexBuffer, indexFormat ?? 'uint16');
+      passEncoder.drawIndexed(indexCount, 1, 0, 0);
     } else {
       passEncoder.draw(posCount, 1, 0, 0);
     }

@@ -33,7 +33,7 @@ export class DeferredGBufferModule extends ShaderModuleBase {
     const includeDepth = this.includeDepth;
     const oct = this.octEncoded;
 
-    const loadCode = useLoad ? `
+const loadCode = useLoad ? `
 let dims = textureDimensions(gAlbedoTex);
 let coord = vec2<i32>(i32(uv.x * f32(dims.x - 1)), i32(uv.y * f32(dims.y - 1)));
 let g0 = textureLoad(gAlbedoTex, coord, 0);
@@ -44,7 +44,11 @@ ${includeDepth ? 'let depthValue = textureLoad(gDepthTex, coord, 0).x;' : 'let d
 let g0 = textureSampleLevel(gAlbedoTex, gSampler, uv, 0.0);
 let g1 = textureSampleLevel(gNormalRoughTex, gSampler, uv, 0.0);
 ${hasEmissive ? 'let g2 = textureSampleLevel(gEmissiveAoTex, gSampler, uv, 0.0);' : 'let g2 = vec4<f32>(0.0, 0.0, 0.0, 1.0);'}
-let depthValue = 1.0;
+${includeDepth ? `
+let depthDims = textureDimensions(gDepthTex);
+let depthCoord = vec2<i32>(i32(uv.x * f32(depthDims.x - 1)), i32(uv.y * f32(depthDims.y - 1)));
+let depthValue = textureLoad(gDepthTex, depthCoord, 0).x;
+` : 'let depthValue = 1.0;'}
 `;
 
     const octDecodeFn = oct ? `

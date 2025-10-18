@@ -6,6 +6,7 @@ import { CubeRenderTest } from './WebgpuSamples/CubeGeometry';
 import { GltfRenderTest } from './WebgpuSamples/gltfRenderTest';
 import { debugOverlay } from '../components/WebgpuApp/util/debug-overlay';
 import { DeferredRenderer } from './Deferred/DeferredRenderer';
+import { DeferredSampleRunner } from './Deferred/Sample/DeferredSampleRunner';
 import { WebgpuSceneRendererGBuffer } from './Deferred/WebgpuSceneRendererGBuffer';
 import { QueryArgs } from '../components/WebgpuApp/util/query-args';
 import { Metrics } from './util/metrics';
@@ -33,6 +34,7 @@ export class WebgpuMain {
   renderTarget: GPUTexture;
   renderTargetView: GPUTextureView;
   deferred: DeferredRenderer | null = null;
+  deferredSample: DeferredSampleRunner | null = null;
   cubeTest: CubeRenderTest;
   gltfTest: GltfRenderTest;
   private _fpsAccum: number;
@@ -50,7 +52,14 @@ export class WebgpuMain {
   }
   async initialize() {
     this.adapter = await navigator.gpu.requestAdapter();
-    const device = await this.adapter.requestDevice();
+    const requireTimestamp = QueryArgs.getBool('profile', false);
+    const requiredFeatures: GPUFeatureName[] = [];
+    if (requireTimestamp && this.adapter && this.adapter.features && this.adapter.features.has('timestamp-query')) {
+      requiredFeatures.push('timestamp-query');
+    } else if (requireTimestamp) {
+      console.warn('[WebgpuMain] timestamp-query feature requested via ?profile=1 but adapter does not support it.');
+    }
+    const device = await this.adapter.requestDevice({ requiredFeatures });
     this.device = device;
     if (this.canvasElem === null) return;
     this.context = this.canvasElem.getContext('webgpu') as GPUCanvasContext;
@@ -108,11 +117,16 @@ export class WebgpuMain {
 
 
 
+    const wantsDeferred = QueryArgs.getBool('deferred', false);
+    const wantsDeferredSample = QueryArgs.getBool('deferredSample', false);
     const absFlag = QueryArgs.getString('absV2', null);
     const absEnabled = absFlag === null ? true : QueryArgs.getBool('absV2', false);
     const legacyOverride = QueryArgs.getBool('legacy', false);
-    const useAbsDemo = !legacyOverride && (absEnabled || QueryArgs.getBool('absDemo', false));
-    if (!useAbsDemo) {
+    const useAbsDemo = !legacyOverride && !wantsDeferred && !wantsDeferredSample && (absEnabled || QueryArgs.getBool('absDemo', false));
+    if (wantsDeferredSample) {
+      this.deferredSample = new DeferredSampleRunner(this);
+      await this.deferredSample.initialize();
+    } else if (!useAbsDemo) {
       this.cubeTest = new CubeRenderTest(this);
       await this.cubeTest.initialize();
 
@@ -219,6 +233,7 @@ export class WebgpuMain {
       };
 
       if (this.deferred) this.deferred.onResize();
+      if (this.deferredSample) this.deferredSample.resize(this.presentationSize[0], this.presentationSize[1]);
       if (this.absDemo) this.absDemo.resize(this.presentationSize[0], this.presentationSize[1]);
 
     });
@@ -227,6 +242,31 @@ export class WebgpuMain {
   frame(dt: number) {
     // Sample is no longer the active page.
     if (!this.canvasElem) return;
+
+    if (this.deferredSample) {
+      this.deferredSample.frame();
+      this._fpsAccum += dt;
+      this._fpsFrames++;
+      if (this._fpsAccum >= 0.25) {
+        this._fps = this._fpsFrames / this._fpsAccum;
+        this._fpsAccum = 0;
+        this._fpsFrames = 0;
+      }
+      this._overlayAccum += dt;
+      if (this._overlayAccum >= 0.25) {
+        const stats = this.deferredSample.getStats();
+        debugOverlay.update({
+          useSkinning: false,
+          joints: 0,
+          animations: 0,
+          channels: stats.numLights,
+          time: `mode=${stats.mode} lights=${stats.numLights}`,
+          fps: this._fps,
+        });
+        this._overlayAccum = 0;
+      }
+      return;
+    }
 
     this.flyControls.Update(dt);
     this.projectionMatrix = this.flyControls.camera.projectionMatrix.toArray() as mat4;
@@ -285,6 +325,8 @@ export class WebgpuMain {
     this.deferred.drawGeometry(commandEncoder);
     this.deferred.lightingPass(commandEncoder);
     this.device.queue.submit([commandEncoder.finish()]);
+    this.deferred.processProfileReadback();
+    this.deferred.processTileDebugReadback(this.device.queue);
 
     // Throttled overlay: FPS + textures + animation/skin info
     this._overlayAccum += dt;
