@@ -138,6 +138,117 @@ const CHUNK_TYPE = {
     BIN: 0x004E4942,
 };
 
+export type SimpleGltfPrimitive = {
+    positions: Float32Array;
+    normals?: Float32Array;
+    uvs?: Float32Array;
+    tangents?: Float32Array;
+    indices?: Uint16Array | Uint32Array;
+};
+
+async function fetchGltfSource(url: string): Promise<{ json: any; baseUrl: string; binaryChunk?: ArrayBuffer }> {
+    const response = await fetch(url);
+    const slash = url.lastIndexOf('/');
+    const baseUrl = slash !== -1 ? url.substring(0, slash + 1) : '';
+    if (url.endsWith('.gltf')) {
+        const json = await response.json();
+        return { json, baseUrl };
+    }
+    if (url.endsWith('.glb')) {
+        const arrayBuffer = await response.arrayBuffer();
+        const headerView = new DataView(arrayBuffer, 0, 12);
+        const magic = headerView.getUint32(0, true);
+        const version = headerView.getUint32(4, true);
+        const length = headerView.getUint32(8, true);
+        if (magic !== GLB_MAGIC) throw new Error('Invalid magic string in binary header.');
+        if (version !== 2) throw new Error('Incompatible version in binary header.');
+        let chunks: Record<number, ArrayBuffer> = {};
+        let chunkOffset = 12;
+        while (chunkOffset < length) {
+            const chunkHeaderView = new DataView(arrayBuffer, chunkOffset, 8);
+            const chunkLength = chunkHeaderView.getUint32(0, true);
+            const chunkType = chunkHeaderView.getUint32(4, true);
+            chunks[chunkType] = arrayBuffer.slice(chunkOffset + 8, chunkOffset + 8 + chunkLength);
+            chunkOffset += chunkLength + 8;
+        }
+        if (!chunks[CHUNK_TYPE.JSON]) throw new Error('File contained no json chunk.');
+        const decoder = new TextDecoder('utf-8');
+        const jsonString = decoder.decode(chunks[CHUNK_TYPE.JSON]);
+        const json = JSON.parse(jsonString);
+        return { json, baseUrl, binaryChunk: chunks[CHUNK_TYPE.BIN] };
+    }
+    throw new Error('Unrecognized file extension');
+}
+
+export async function loadGltfSimplePrimitives(url: string): Promise<SimpleGltfPrimitive[]> {
+    const { json, baseUrl, binaryChunk } = await fetchGltfSource(url);
+    if (!json.asset) throw new Error('Missing asset description.');
+    if (json.asset.minVersion != '2.0' && json.asset.version != '2.0') throw new Error('Incompatible asset version.');
+
+    const buffers: Gltf2Resource[] = [];
+    if (binaryChunk) {
+        buffers[0] = new Gltf2Resource({}, baseUrl, binaryChunk);
+    } else {
+        for (const buffer of json.buffers ?? []) {
+            buffers.push(new Gltf2Resource(buffer, baseUrl));
+        }
+    }
+
+    const bufferViews: Gltf2BufferView[] = [];
+    for (const bufferView of json.bufferViews ?? []) {
+        bufferViews.push(new Gltf2BufferView(bufferView, buffers));
+    }
+
+    const accessors = json.accessors ?? [];
+    const primitives: SimpleGltfPrimitive[] = [];
+
+    for (const mesh of json.meshes ?? []) {
+        for (const primitive of mesh.primitives ?? []) {
+            const prim: SimpleGltfPrimitive = { positions: new Float32Array() };
+            for (const name in primitive.attributes) {
+                const accessorIndex = primitive.attributes[name];
+                const accessor = accessors[accessorIndex];
+                const bufferView = bufferViews[accessor.bufferView];
+                const array = await ExtractTypedArray(accessor, bufferView);
+                switch (name) {
+                    case 'POSITION':
+                        prim.positions = Float32Array.from(array as any);
+                        break;
+                    case 'NORMAL':
+                        prim.normals = Float32Array.from(array as any);
+                        break;
+                    case 'TEXCOORD_0':
+                        prim.uvs = Float32Array.from(array as any);
+                        break;
+                    case 'TANGENT':
+                        prim.tangents = Float32Array.from(array as any);
+                        break;
+                    default:
+                        break;
+                }
+            }
+            if ('indices' in primitive) {
+                const accessor = accessors[primitive.indices];
+                const bufferView = bufferViews[accessor.bufferView];
+                const array = await ExtractTypedArray(accessor, bufferView);
+                if (array instanceof Uint32Array) {
+                    prim.indices = new Uint32Array(array);
+                } else if (array instanceof Uint16Array) {
+                    prim.indices = new Uint16Array(array);
+                } else if (array instanceof Uint8Array) {
+                    prim.indices = new Uint16Array(array); // promote
+                }
+            }
+            if (!prim.positions || prim.positions.length === 0) {
+                console.warn('[GLTF] primitive without POSITION attribute skipped.');
+                continue;
+            }
+            primitives.push(prim);
+        }
+    }
+    return primitives;
+}
+
 function isAbsoluteUri(uri) {
     let absRegEx = new RegExp('^' + window.location.protocol, 'i');
     return !!uri.match(absRegEx);

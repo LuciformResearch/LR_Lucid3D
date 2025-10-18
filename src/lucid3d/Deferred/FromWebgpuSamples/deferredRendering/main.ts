@@ -1,5 +1,5 @@
 import { GUI } from 'dat.gui';
-import { mesh } from './mesh/stanfordDragon';
+import { loadGltfSimplePrimitives } from '../../../Loaders/GLTF2WGPU2';
 import { Matrix4 } from '../../../Math/Matrix4';
 import { Vector3 } from '../../../Math/Vector3';
 import { QuaternionHelper } from '../../../Math/QuaternionHelper';
@@ -57,37 +57,71 @@ context.configure({
   format: presentationFormat,
 });
 
+const gltfPrimitives = await loadGltfSimplePrimitives('assets/stanford_dragon_pbr/scene.gltf');
+if (!gltfPrimitives.length) {
+  throw new Error('GLTF file contained no mesh primitives.');
+}
+const gltfPrimitive = gltfPrimitives[0];
+const positions = gltfPrimitive.positions;
+const normals = gltfPrimitive.normals ?? new Float32Array(positions.length);
+const uvs = gltfPrimitive.uvs ?? new Float32Array((positions.length / 3) * 2);
+const vertexCount = positions.length / 3;
+
 // Create the model vertex buffer.
 const kVertexStride = 8;
 const vertexBuffer = device.createBuffer({
   label: 'model vertex buffer',
-  // position: vec3, normal: vec3, uv: vec2
-  size: mesh.positions.length * kVertexStride * Float32Array.BYTES_PER_ELEMENT,
+  size: vertexCount * kVertexStride * Float32Array.BYTES_PER_ELEMENT,
   usage: GPUBufferUsage.VERTEX,
   mappedAtCreation: true,
 });
 {
   const mapping = new Float32Array(vertexBuffer.getMappedRange());
-  for (let i = 0; i < mesh.positions.length; ++i) {
-    mapping.set(mesh.positions[i], kVertexStride * i);
-    mapping.set(mesh.normals[i], kVertexStride * i + 3);
-    mapping.set(mesh.uvs[i], kVertexStride * i + 6);
+  for (let i = 0; i < vertexCount; ++i) {
+    const posIndex = i * 3;
+    const uvIndex = i * 2;
+    const base = kVertexStride * i;
+    mapping[base + 0] = positions[posIndex + 0];
+    mapping[base + 1] = positions[posIndex + 1];
+    mapping[base + 2] = positions[posIndex + 2];
+    mapping[base + 3] = normals[posIndex + 0] ?? 0;
+    mapping[base + 4] = normals[posIndex + 1] ?? 0;
+    mapping[base + 5] = normals[posIndex + 2] ?? 1;
+    mapping[base + 6] = uvs[uvIndex + 0] ?? 0;
+    mapping[base + 7] = uvs[uvIndex + 1] ?? 0;
   }
   vertexBuffer.unmap();
 }
 
-// Create the model index buffer.
-const indexCount = mesh.triangles.length * 3;
+let indexArray = gltfPrimitive.indices;
+if (!indexArray || indexArray.length === 0) {
+  const generated = new Uint32Array(vertexCount);
+  for (let i = 0; i < vertexCount; ++i) generated[i] = i;
+  indexArray = generated;
+}
+const sourceIndexArray = Array.from(indexArray as ArrayLike<number>);
+let maxIndex = 0;
+for (let i = 0; i < sourceIndexArray.length; ++i) {
+  if (sourceIndexArray[i] > maxIndex) maxIndex = sourceIndexArray[i];
+}
+const useUint32 = maxIndex > 65535;
+const finalIndexArray = useUint32
+  ? Uint32Array.from(sourceIndexArray)
+  : Uint16Array.from(sourceIndexArray);
+const indexFormat: GPUIndexFormat = useUint32 ? 'uint32' : 'uint16';
+
+const indexCount = finalIndexArray.length;
 const indexBuffer = device.createBuffer({
   label: 'model index buffer',
-  size: indexCount * Uint16Array.BYTES_PER_ELEMENT,
+  size: finalIndexArray.byteLength,
   usage: GPUBufferUsage.INDEX,
   mappedAtCreation: true,
 });
 {
-  const mapping = new Uint16Array(indexBuffer.getMappedRange());
-  for (let i = 0; i < mesh.triangles.length; ++i) {
-    mapping.set(mesh.triangles[i], 3 * i);
+  if (useUint32) {
+    new Uint32Array(indexBuffer.getMappedRange()).set(finalIndexArray as Uint32Array);
+  } else {
+    new Uint16Array(indexBuffer.getMappedRange()).set(finalIndexArray as Uint16Array);
   }
   indexBuffer.unmap();
 }
@@ -141,7 +175,7 @@ const vertexBuffers: Iterable<GPUVertexBufferLayout> = [
   },
 ];
 
-const primitive: GPUPrimitiveState = {
+const primitiveState: GPUPrimitiveState = {
   topology: 'triangle-list',
   cullMode: 'back',
 };
@@ -171,7 +205,7 @@ const writeGBuffersPipeline = device.createRenderPipeline({
     depthCompare: 'less',
     format: 'depth24plus',
   },
-  primitive,
+  primitive: primitiveState,
 });
 
 const gBufferTexturesBindGroupLayout = device.createBindGroupLayout({
@@ -250,7 +284,7 @@ const gBuffersDebugViewPipeline = device.createRenderPipeline({
       canvasSizeHeight: canvas.height,
     },
   },
-  primitive,
+  primitive: primitiveState,
 });
 
 const deferredRenderPipeline = device.createRenderPipeline({
@@ -276,7 +310,7 @@ const deferredRenderPipeline = device.createRenderPipeline({
       },
     ],
   },
-  primitive,
+  primitive: primitiveState,
 });
 
 const writeGBufferPassDescriptor: GPURenderPassDescriptor = {
@@ -556,7 +590,7 @@ function frame(now: number) {
     gBufferPass.setPipeline(writeGBuffersPipeline);
     gBufferPass.setBindGroup(0, sceneUniformBindGroup);
     gBufferPass.setVertexBuffer(0, vertexBuffer);
-    gBufferPass.setIndexBuffer(indexBuffer, 'uint16');
+    gBufferPass.setIndexBuffer(indexBuffer, indexFormat);
     gBufferPass.drawIndexed(indexCount);
     gBufferPass.end();
   }
