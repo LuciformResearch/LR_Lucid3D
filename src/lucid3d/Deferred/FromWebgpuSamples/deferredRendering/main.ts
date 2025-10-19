@@ -1,13 +1,13 @@
 import { GUI } from 'dat.gui';
-import { loadGltfSimplePrimitives } from '../../../Loaders/GLTF2WGPU2';
+import { loadGltfSimpleScene, createSimpleTexture, SimpleGltfScene } from '../../../Loaders/GLTF2WGPU2';
 import { Matrix4 } from '../../../Math/Matrix4';
 import { Vector3 } from '../../../Math/Vector3';
 import { QuaternionHelper } from '../../../Math/QuaternionHelper';
 import { WebgpuPerspectiveCamera, WebgpuFlyControls } from '../../../WebgpuOrbitControls';
 import { input } from '../../../Input';
+import { DeferredSampleGBuffer } from './RendererAndSceneAbstractions/DeferredSampleGBuffer';
+import { DeferredSampleRenderer } from './RendererAndSceneAbstractions/DeferredSampleRenderer';
 
-const vertexWriteGBuffers = require('./shaders/vertexWriteGBuffers.wgsl').default as string;
-const fragmentWriteGBuffers = require('./shaders/fragmentWriteGBuffers.wgsl').default as string;
 const vertexTextureQuad = require('./shaders/vertexTextureQuad.wgsl').default as string;
 const fragmentGBuffersDebugView = require('./shaders/fragmentGBuffersDebugView.wgsl').default as string;
 const fragmentDeferredRendering = require('./shaders/fragmentDeferredRendering.wgsl').default as string;
@@ -57,11 +57,11 @@ context.configure({
   format: presentationFormat,
 });
 
-const gltfPrimitives = await loadGltfSimplePrimitives('assets/stanford_dragon_pbr/scene.gltf');
-if (!gltfPrimitives.length) {
+const gltfScene: SimpleGltfScene = await loadGltfSimpleScene('assets/stanford_dragon_pbr/scene.gltf');
+if (!gltfScene.primitives.length) {
   throw new Error('GLTF file contained no mesh primitives.');
 }
-const gltfPrimitive = gltfPrimitives[0];
+const gltfPrimitive = gltfScene.primitives[0];
 const positions = gltfPrimitive.positions;
 const normals = gltfPrimitive.normals ?? new Float32Array(positions.length);
 const uvs = gltfPrimitive.uvs ?? new Float32Array((positions.length / 3) * 2);
@@ -126,87 +126,110 @@ const indexBuffer = device.createBuffer({
   indexBuffer.unmap();
 }
 
-// GBuffer texture render targets
-const gBufferTexture2DFloat16 = device.createTexture({
-  size: [canvas.width, canvas.height],
-  usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-  format: 'rgba16float',
-});
-const gBufferTextureAlbedo = device.createTexture({
-  size: [canvas.width, canvas.height],
-  usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-  format: 'bgra8unorm',
-});
-const depthTexture = device.createTexture({
-  size: [canvas.width, canvas.height],
-  format: 'depth24plus',
-  usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+const gbuffer = new DeferredSampleGBuffer(device, {
+  width: canvas.width,
+  height: canvas.height,
 });
 
-const gBufferTextureViews = [
-  gBufferTexture2DFloat16.createView({ label: 'gbuffer texture normal' }),
-  gBufferTextureAlbedo.createView({ label: 'gbuffer texture albedo' }),
-  depthTexture.createView({ label: 'depth normal' }),
-];
+const vertexLayout: GPUVertexBufferLayout = {
+  arrayStride: Float32Array.BYTES_PER_ELEMENT * 8,
+  attributes: [
+    {
+      shaderLocation: 0,
+      offset: 0,
+      format: 'float32x3',
+    },
+    {
+      shaderLocation: 1,
+      offset: Float32Array.BYTES_PER_ELEMENT * 3,
+      format: 'float32x3',
+    },
+    {
+      shaderLocation: 2,
+      offset: Float32Array.BYTES_PER_ELEMENT * 6,
+      format: 'float32x2',
+    },
+  ],
+};
 
-const vertexBuffers: Iterable<GPUVertexBufferLayout> = [
-  {
-    arrayStride: Float32Array.BYTES_PER_ELEMENT * 8,
-    attributes: [
-      {
-        // position
-        shaderLocation: 0,
-        offset: 0,
-        format: 'float32x3',
-      },
-      {
-        // normal
-        shaderLocation: 1,
-        offset: Float32Array.BYTES_PER_ELEMENT * 3,
-        format: 'float32x3',
-      },
-      {
-        // uv
-        shaderLocation: 2,
-        offset: Float32Array.BYTES_PER_ELEMENT * 6,
-        format: 'float32x2',
-      },
-    ],
-  },
-];
+const fallbackTextureStore: GPUTexture[] = [];
+const createSolidTextureView = (device: GPUDevice, color: [number, number, number, number]) => {
+  const texture = device.createTexture({
+    size: [1, 1, 1],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  const data = new Uint8Array([
+    Math.round(Math.min(Math.max(color[0], 0.0), 1.0) * 255.0),
+    Math.round(Math.min(Math.max(color[1], 0.0), 1.0) * 255.0),
+    Math.round(Math.min(Math.max(color[2], 0.0), 1.0) * 255.0),
+    Math.round(Math.min(Math.max(color[3], 0.0), 1.0) * 255.0),
+  ]);
+  device.queue.writeTexture(
+    { texture },
+    data,
+    { bytesPerRow: 4 },
+    { width: 1, height: 1, depthOrArrayLayers: 1 },
+  );
+  fallbackTextureStore.push(texture);
+  return texture.createView();
+};
+
+async function textureViewOrFallback(index: number | undefined, fallback: GPUTextureView): Promise<{ view: GPUTextureView; usedFallback: boolean }> {
+  if (index === undefined) {
+    return { view: fallback, usedFallback: true };
+  }
+  const tex = createSimpleTexture(device, gltfScene, index);
+  if (!tex) {
+    return { view: fallback, usedFallback: true };
+  }
+  try {
+    const gpuTex = await tex.GetGPUTex();
+    return { view: gpuTex.createView(), usedFallback: false };
+  } catch {
+    return { view: fallback, usedFallback: true };
+  }
+}
+
+const fallbackBaseColorView = createSolidTextureView(device, [1, 1, 1, 1]);
+const fallbackMetallicRoughnessView = createSolidTextureView(device, [1, 1, 1, 1]);
+const fallbackEmissiveView = createSolidTextureView(device, [0, 0, 0, 1]);
+const fallbackOcclusionView = createSolidTextureView(device, [1, 1, 1, 1]);
+
+const materialIndex = gltfPrimitive.materialIndex ?? 0;
+const defaultMaterialInfo = {
+  baseColorFactor: [1, 1, 1, 1] as [number, number, number, number],
+  emissiveFactor: [0, 0, 0] as [number, number, number],
+  metallicFactor: 1,
+  roughnessFactor: 1,
+  baseColorTexture: undefined,
+  metallicRoughnessTexture: undefined,
+  emissiveTexture: undefined,
+  occlusionTexture: undefined,
+};
+const materialInfo = gltfScene.materials[materialIndex] ?? defaultMaterialInfo;
+
+const baseColorTextureInfo = await textureViewOrFallback(materialInfo.baseColorTexture, fallbackBaseColorView);
+const metallicRoughnessTextureInfo = await textureViewOrFallback(materialInfo.metallicRoughnessTexture, fallbackMetallicRoughnessView);
+const emissiveTextureInfo = await textureViewOrFallback(materialInfo.emissiveTexture, fallbackEmissiveView);
+const occlusionTextureInfo = await textureViewOrFallback(materialInfo.occlusionTexture, fallbackOcclusionView);
+
+const materialParams = {
+  baseColorFactor: materialInfo.baseColorFactor,
+  emissiveFactor: materialInfo.emissiveFactor,
+  metallicFactor: materialInfo.metallicFactor,
+  roughnessFactor: materialInfo.roughnessFactor,
+  aoFactor: 1.0,
+  baseColorTexture: baseColorTextureInfo.usedFallback ? undefined : baseColorTextureInfo.view,
+  metallicRoughnessTexture: metallicRoughnessTextureInfo.usedFallback ? undefined : metallicRoughnessTextureInfo.view,
+  emissiveTexture: emissiveTextureInfo.usedFallback ? undefined : emissiveTextureInfo.view,
+  occlusionTexture: occlusionTextureInfo.usedFallback ? undefined : occlusionTextureInfo.view,
+};
 
 const primitiveState: GPUPrimitiveState = {
   topology: 'triangle-list',
   cullMode: 'back',
 };
-
-const writeGBuffersPipeline = device.createRenderPipeline({
-  label: 'write gbuffers',
-  layout: 'auto',
-  vertex: {
-    module: device.createShaderModule({
-      code: vertexWriteGBuffers,
-    }),
-    buffers: vertexBuffers,
-  },
-  fragment: {
-    module: device.createShaderModule({
-      code: fragmentWriteGBuffers,
-    }),
-    targets: [
-      // normal
-      { format: 'rgba16float' },
-      // albedo
-      { format: 'bgra8unorm' },
-    ],
-  },
-  depthStencil: {
-    depthWriteEnabled: true,
-    depthCompare: 'less',
-    format: 'depth24plus',
-  },
-  primitive: primitiveState,
-});
 
 const gBufferTexturesBindGroupLayout = device.createBindGroupLayout({
   entries: [
@@ -229,6 +252,20 @@ const gBufferTexturesBindGroupLayout = device.createBindGroupLayout({
       visibility: GPUShaderStage.FRAGMENT,
       texture: {
         sampleType: 'unfilterable-float',
+      },
+    },
+    {
+      binding: 3,
+      visibility: GPUShaderStage.FRAGMENT,
+      texture: {
+        sampleType: 'unfilterable-float',
+      },
+    },
+    {
+      binding: 4,
+      visibility: GPUShaderStage.FRAGMENT,
+      sampler: {
+        type: 'non-filtering',
       },
     },
   ],
@@ -313,32 +350,6 @@ const deferredRenderPipeline = device.createRenderPipeline({
   primitive: primitiveState,
 });
 
-const writeGBufferPassDescriptor: GPURenderPassDescriptor = {
-  colorAttachments: [
-    {
-      view: gBufferTextureViews[0],
-
-      clearValue: [0.0, 0.0, 1.0, 1.0],
-      loadOp: 'clear',
-      storeOp: 'store',
-    },
-    {
-      view: gBufferTextureViews[1],
-
-      clearValue: [0, 0, 0, 1],
-      loadOp: 'clear',
-      storeOp: 'store',
-    },
-  ],
-  depthStencilAttachment: {
-    view: gBufferTextureViews[2],
-
-    depthClearValue: 1.0,
-    depthLoadOp: 'clear',
-    depthStoreOp: 'store',
-  },
-};
-
 const textureQuadPassDescriptor: GPURenderPassDescriptor = {
   colorAttachments: [
     {
@@ -389,45 +400,39 @@ const modelUniformBuffer = device.createBuffer({
 
 const cameraUniformBuffer = device.createBuffer({
   label: 'camera matrix uniform',
-  size: 4 * 16 * 2, // two 4x4 matrix
+  size: Float32Array.BYTES_PER_ELEMENT * 36,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
-const sceneUniformBindGroup = device.createBindGroup({
-  layout: writeGBuffersPipeline.getBindGroupLayout(0),
-  entries: [
-    {
-      binding: 0,
-      resource: {
-        buffer: modelUniformBuffer,
-      },
-    },
-    {
-      binding: 1,
-      resource: {
-        buffer: cameraUniformBuffer,
-      },
-    },
-  ],
+const gBufferSampler = device.createSampler({
+  label: 'gbuffer sampler',
+  addressModeU: 'clamp-to-edge',
+  addressModeV: 'clamp-to-edge',
+  addressModeW: 'clamp-to-edge',
+  magFilter: 'nearest',
+  minFilter: 'nearest',
+  mipmapFilter: 'nearest',
 });
 
-const gBufferTexturesBindGroup = device.createBindGroup({
-  layout: gBufferTexturesBindGroupLayout,
-  entries: [
-    {
-      binding: 0,
-      resource: gBufferTextureViews[0],
-    },
-    {
-      binding: 1,
-      resource: gBufferTextureViews[1],
-    },
-    {
-      binding: 2,
-      resource: gBufferTextureViews[2],
-    },
-  ],
+const sampleRenderer = new DeferredSampleRenderer({
+  device,
+  vertexLayout,
+  gbuffer,
+  modelBuffer: modelUniformBuffer,
+  cameraBuffer: cameraUniformBuffer,
+  gbufferTexturesLayout: gBufferTexturesBindGroupLayout,
+  gbufferSampler: gBufferSampler,
+  material: materialParams,
+  fallbackTextures: {
+    baseColor: fallbackBaseColorView,
+    metallicRoughness: fallbackMetallicRoughnessView,
+    emissive: fallbackEmissiveView,
+    occlusion: fallbackOcclusionView,
+  },
 });
+
+let gBufferTexturesBindGroup = sampleRenderer.gbufferBindGroupHandle;
+
 
 // Lights data are uploaded in a storage buffer
 // which could be updated/culled/etc. with a compute shader
@@ -567,6 +572,9 @@ flyControls.pitch = initialPitch;
 flyControls.UpdateYawPitch(0);
 flyControls.needUpdate = false;
 
+let cameraPositionArray = new Float32Array([camera.position.x, camera.position.y, camera.position.z, 1.0]);
+device.queue.writeBuffer(cameraUniformBuffer, 128, cameraPositionArray);
+
 let lastTime = performance.now();
 
 function frame(now: number) {
@@ -575,24 +583,26 @@ function frame(now: number) {
   flyControls.Update(dt);
   camera.UpdateMatrixWorld(false);
 
+  const [gbufWidth, gbufHeight] = gbuffer.size;
+  if (canvas.width !== gbufWidth || canvas.height !== gbufHeight) {
+    sampleRenderer.ensureSize(canvas.width, canvas.height);
+    gBufferTexturesBindGroup = sampleRenderer.gbufferBindGroupHandle;
+  }
+
   const viewMatrix = camera.GetMatrixWorld().invert();
   const viewProj = camera.projectionMatrix.clone().multiplyMatrices(camera.projectionMatrix, viewMatrix);
   writeMatrix(device, cameraUniformBuffer, 0, viewProj);
   const cameraInvViewProj = viewProj.clone().invert();
   writeMatrix(device, cameraUniformBuffer, 64, cameraInvViewProj);
+  cameraPositionArray[0] = camera.position.x;
+  cameraPositionArray[1] = camera.position.y;
+  cameraPositionArray[2] = camera.position.z;
+  cameraPositionArray[3] = 1.0;
+  device.queue.writeBuffer(cameraUniformBuffer, 128, cameraPositionArray);
 
   const commandEncoder = device.createCommandEncoder();
   {
-    // Write position, normal, albedo etc. data to gBuffers
-    const gBufferPass = commandEncoder.beginRenderPass(
-      writeGBufferPassDescriptor
-    );
-    gBufferPass.setPipeline(writeGBuffersPipeline);
-    gBufferPass.setBindGroup(0, sceneUniformBindGroup);
-    gBufferPass.setVertexBuffer(0, vertexBuffer);
-    gBufferPass.setIndexBuffer(indexBuffer, indexFormat);
-    gBufferPass.drawIndexed(indexCount);
-    gBufferPass.end();
+    sampleRenderer.encodeGeometry(commandEncoder, vertexBuffer, indexBuffer, indexFormat, indexCount);
   }
   {
     // Update lights position

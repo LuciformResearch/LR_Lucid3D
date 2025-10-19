@@ -5,6 +5,7 @@ struct Uniforms {
 struct Camera {
   viewProjectionMatrix : mat4x4f,
   invViewProjectionMatrix : mat4x4f,
+  cameraPosition : vec4f,
 }
 @group(0) @binding(0) var<uniform> uniforms : Uniforms;
 @group(0) @binding(1) var<uniform> camera : Camera;

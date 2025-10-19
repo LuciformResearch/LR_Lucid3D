@@ -144,6 +144,40 @@ export type SimpleGltfPrimitive = {
     uvs?: Float32Array;
     tangents?: Float32Array;
     indices?: Uint16Array | Uint32Array;
+    materialIndex?: number;
+};
+
+export type SimpleGltfSampler = {
+    minFilter?: number;
+    magFilter?: number;
+    wrapS?: number;
+    wrapT?: number;
+};
+
+export type SimpleGltfTexture = {
+    index: number;
+    resource: Gltf2Resource;
+    sampler?: SimpleGltfSampler;
+};
+
+export type SimpleGltfMaterial = {
+    name?: string;
+    baseColorFactor: [number, number, number, number];
+    metallicFactor: number;
+    roughnessFactor: number;
+    emissiveFactor: [number, number, number];
+    baseColorTexture?: number;
+    metallicRoughnessTexture?: number;
+    normalTexture?: number;
+    occlusionTexture?: number;
+    emissiveTexture?: number;
+};
+
+export type SimpleGltfScene = {
+    primitives: SimpleGltfPrimitive[];
+    materials: SimpleGltfMaterial[];
+    textures: SimpleGltfTexture[];
+    bufferViews: Gltf2BufferView[];
 };
 
 async function fetchGltfSource(url: string): Promise<{ json: any; baseUrl: string; binaryChunk?: ArrayBuffer }> {
@@ -180,7 +214,7 @@ async function fetchGltfSource(url: string): Promise<{ json: any; baseUrl: strin
     throw new Error('Unrecognized file extension');
 }
 
-export async function loadGltfSimplePrimitives(url: string): Promise<SimpleGltfPrimitive[]> {
+export async function loadGltfSimpleScene(url: string): Promise<SimpleGltfScene> {
     const { json, baseUrl, binaryChunk } = await fetchGltfSource(url);
     if (!json.asset) throw new Error('Missing asset description.');
     if (json.asset.minVersion != '2.0' && json.asset.version != '2.0') throw new Error('Incompatible asset version.');
@@ -194,17 +228,56 @@ export async function loadGltfSimplePrimitives(url: string): Promise<SimpleGltfP
         }
     }
 
-    const bufferViews: Gltf2BufferView[] = [];
-    for (const bufferView of json.bufferViews ?? []) {
-        bufferViews.push(new Gltf2BufferView(bufferView, buffers));
-    }
+const bufferViews: Gltf2BufferView[] = [];
+for (const bufferView of json.bufferViews ?? []) {
+    bufferViews.push(new Gltf2BufferView(bufferView, buffers));
+}
+
+const imageResources: Gltf2Resource[] = [];
+for (const image of json.images ?? []) {
+    imageResources.push(new Gltf2Resource(image, baseUrl));
+}
+
+const samplerDefs = json.samplers ?? [];
+const texturesInfo: SimpleGltfTexture[] = [];
+for (let tIndex = 0; tIndex < (json.textures?.length ?? 0); tIndex++) {
+    const texture = json.textures[tIndex];
+    const sampler = texture.sampler !== undefined ? samplerDefs[texture.sampler] : undefined;
+    texturesInfo.push({
+        index: texture.source,
+        resource: imageResources[texture.source],
+        sampler: sampler ? {
+            minFilter: sampler.minFilter,
+            magFilter: sampler.magFilter,
+            wrapS: sampler.wrapS,
+            wrapT: sampler.wrapT,
+        } : undefined,
+    });
+}
+
+const materials: SimpleGltfMaterial[] = [];
+for (const material of json.materials ?? []) {
+    const pbr = material.pbrMetallicRoughness ?? {};
+    materials.push({
+        name: material.name,
+        baseColorFactor: (pbr.baseColorFactor ?? [1, 1, 1, 1]) as [number, number, number, number],
+        metallicFactor: pbr.metallicFactor ?? 1,
+        roughnessFactor: pbr.roughnessFactor ?? 1,
+        emissiveFactor: (material.emissiveFactor ?? [0, 0, 0]) as [number, number, number],
+        baseColorTexture: pbr.baseColorTexture?.index,
+        metallicRoughnessTexture: pbr.metallicRoughnessTexture?.index,
+        normalTexture: material.normalTexture?.index,
+        occlusionTexture: material.occlusionTexture?.index,
+        emissiveTexture: material.emissiveTexture?.index,
+    });
+}
 
     const accessors = json.accessors ?? [];
     const primitives: SimpleGltfPrimitive[] = [];
 
     for (const mesh of json.meshes ?? []) {
         for (const primitive of mesh.primitives ?? []) {
-            const prim: SimpleGltfPrimitive = { positions: new Float32Array() };
+            const prim: SimpleGltfPrimitive = { positions: new Float32Array(), materialIndex: primitive.material };
             for (const name in primitive.attributes) {
                 const accessorIndex = primitive.attributes[name];
                 const accessor = accessors[accessorIndex];
@@ -236,7 +309,7 @@ export async function loadGltfSimplePrimitives(url: string): Promise<SimpleGltfP
                 } else if (array instanceof Uint16Array) {
                     prim.indices = new Uint16Array(array);
                 } else if (array instanceof Uint8Array) {
-                    prim.indices = new Uint16Array(array); // promote
+                    prim.indices = new Uint16Array(array as Uint8Array);
                 }
             }
             if (!prim.positions || prim.positions.length === 0) {
@@ -246,7 +319,13 @@ export async function loadGltfSimplePrimitives(url: string): Promise<SimpleGltfP
             primitives.push(prim);
         }
     }
-    return primitives;
+    const scene: SimpleGltfScene = {
+        primitives,
+        materials,
+        textures: texturesInfo,
+        bufferViews,
+    };
+    return scene;
 }
 
 function isAbsoluteUri(uri) {
@@ -266,6 +345,24 @@ function resolveUri(uri, baseUrl) {
     return baseUrl + uri;
 }
 
+
+export async function loadGltfSimplePrimitives(url: string): Promise<SimpleGltfPrimitive[]> {
+    const scene = await loadGltfSimpleScene(url);
+    return scene.primitives;
+}
+
+export function createSimpleTexture(device: GPUDevice, scene: SimpleGltfScene, textureIndex: number): WebgpuTexture | null {
+    const texInfo = scene.textures[textureIndex];
+    if (!texInfo) return null;
+    const tex = texInfo.resource.texture(scene.bufferViews, device);
+    if (texInfo.sampler) {
+        tex.minFilter = texInfo.sampler.minFilter;
+        tex.magFilter = texInfo.sampler.magFilter;
+        tex.wrapS = texInfo.sampler.wrapS;
+        tex.wrapT = texInfo.sampler.wrapT;
+    }
+    return tex;
+}
 
 const CompononentCount = new Map(
     [
@@ -1130,7 +1227,7 @@ export class WebgpuTexture {
         });
     }
 }
-class Gltf2Resource {
+export class Gltf2Resource {
     json: any;
     baseUrl: any;
     _dataPromise: any;
